@@ -16,23 +16,20 @@ HubBot is a Discord bot that manages temporary voice channels. When a user joins
 Create an application on the [Discord Developer Portal](https://discord.com/developers/applications).
 
 #### OAuth2 Scopes
-- `bot`
-- `applications.commands` (required for buttons/menus/modals to work correctly in some contexts)
+- `bot` (Standard bot functionality)
 
 #### Privileged Gateway Intents
 - **Guilds**: Required to manage channels.
 - **Guild Voice States**: Required to detect users joining/leaving voice channels.
+- **NOTE**: This bot does **NOT** require the *Message Content* intent.
 
 #### Bot Permissions
-The bot needs the following permissions (assigned in the OAuth2 URL generator or manually in the Hub category):
-- **Manage Channels**: To create and delete temporary rooms.
-- **Manage Roles**: To toggle privacy (Lock/Unlock) by editing role overwrites.
+The bot follows the principle of least privilege. It only needs permissions to manage the channels it creates:
+- **Manage Channels**: To create/delete rooms and toggle privacy (Lock/Unlock) via channel overwrites.
 - **Move Members**: To move users from the Hub to their new room.
 - **View Channel**: To see the Hub and Category.
-- **Connect / Speak**: To operate in voice channels.
-- **Send Messages**: To post the control panel.
+- **Send Messages**: To post the control panel embed.
 - **Embed Links**: To format the control panel.
-- **Read Message History**: To fetch the control panel for recovery.
 - **Manage Messages**: Required to **Pin** the control panel message.
 
 ### 2. Configuration
