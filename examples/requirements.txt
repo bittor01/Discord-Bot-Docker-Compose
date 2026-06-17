@@ -1,0 +1,14 @@
+# Pinned dependencies for the Agentic Flow boilerplate.
+# Versions are pinned and selected based on recent stability.
+
+# LangChain core components
+langchain==0.1.12
+langchain-community==0.0.28
+langchain-openai==0.0.8
+
+# Data handling and graph support
+pydantic==2.6.4
+falkordb==0.1.1
+
+# Utility
+python-dotenv==1.0.1
