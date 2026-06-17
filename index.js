@@ -1,0 +1,289 @@
+/**
+ * HubBot - Dynamic Voice Channel Bot
+ *
+ * This bot creates temporary voice channels when users join a designated "Hub" channel.
+ * It provides a control panel for owners to manage their channels.
+ */
+
+// Load environment variables from .env file
+require('dotenv').config();
+
+// Import necessary classes from discord.js
+const {
+    Client,
+    GatewayIntentBits,
+    ChannelType,
+    PermissionFlagsBits,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    StringSelectMenuBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    InteractionType
+} = require('discord.js');
+
+// Import database helper functions
+const db = require('./database');
+
+// Initialize the Discord client with required intents
+// Guilds: To manage channels
+// GuildVoiceStates: To detect users joining/leaving voice channels
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildVoiceStates
+    ]
+});
+
+// Event: Client is ready
+client.once('ready', async () => {
+    // Log successful login
+    console.log(`Logged in as ${client.user.tag}!`);
+
+    // Perform recovery routine to clean up dead or empty channels
+    console.log('Running recovery routine...');
+    const savedChannels = db.getAllChannels();
+
+    for (const record of savedChannels) {
+        try {
+            // Attempt to fetch the channel from Discord
+            const channel = await client.channels.fetch(record.voice_channel_id).catch(() => null);
+
+            if (!channel) {
+                // If channel no longer exists in Discord, remove from database
+                console.log(`Removing non-existent channel ${record.voice_channel_id} from DB.`);
+                db.removeChannel(record.voice_channel_id);
+            } else if (channel.members.size === 0) {
+                // If channel exists but is empty, delete it and remove from DB
+                console.log(`Deleting empty channel ${channel.id} found during recovery.`);
+                await channel.delete('Recovery: Channel was empty');
+                db.removeChannel(channel.id);
+            } else {
+                // Channel exists and has members, it's still active
+                console.log(`Channel ${channel.id} is still active with ${channel.members.size} members.`);
+            }
+        } catch (error) {
+            // Log any errors encountered during recovery for specific channels
+            console.error(`Error recovering channel ${record.voice_channel_id}:`, error);
+        }
+    }
+    console.log('Recovery routine complete.');
+});
+
+// Event: Voice State Update (Joins, Leaves, Moves)
+client.on('voiceStateUpdate', async (oldState, newState) => {
+    // Get Hub and Category IDs from environment
+    const HUB_CHANNEL_ID = process.env.HUB_CHANNEL_ID;
+    const CATEGORY_ID = process.env.CATEGORY_ID;
+
+    // Check if a user joined the Hub channel
+    // We only trigger if the user was NOT previously in the Hub channel (prevents loops on mute/deafen)
+    if (newState.channelId === HUB_CHANNEL_ID && oldState.channelId !== HUB_CHANNEL_ID) {
+        try {
+            const member = newState.member;
+            const guild = newState.guild;
+
+            // Create a new temporary voice channel
+            const voiceChannel = await guild.channels.create({
+                name: `${member.displayName}'s Room`,
+                type: ChannelType.GuildVoice,
+                parent: CATEGORY_ID,
+                permissionOverwrites: [
+                    {
+                        // Set the creator as the owner.
+                        // We do NOT give ManageChannels to enforce the middleware approach via buttons.
+                        id: member.id,
+                        allow: [PermissionFlagsBits.Connect, PermissionFlagsBits.ViewChannel]
+                    }
+                ]
+            });
+
+            // Move the user into their new channel
+            await member.voice.setChannel(voiceChannel);
+
+            // Create the Control Panel Embed
+            const controlEmbed = new EmbedBuilder()
+                .setTitle('Voice Channel Control Panel')
+                .setDescription('Use the buttons below to manage your temporary voice channel.')
+                .setColor(0x00AE86)
+                .addFields(
+                    { name: 'Owner', value: `<@${member.id}>`, inline: true },
+                    { name: 'Channel', value: `${voiceChannel.name}`, inline: true }
+                );
+
+            // Create buttons for Name Change and Privacy Toggle
+            const buttons = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('manage_name')
+                        .setLabel('Edit Name')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('manage_privacy')
+                        .setLabel('Lock/Unlock')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+
+            // Create select menu for User Limit
+            const limitMenu = new ActionRowBuilder()
+                .addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId('manage_limit')
+                        .setPlaceholder('Set User Limit')
+                        .addOptions([
+                            { label: 'Unlimited', value: '0' },
+                            { label: '2 Users', value: '2' },
+                            { label: '3 Users', value: '3' },
+                            { label: '4 Users', value: '4' },
+                            { label: '5 Users', value: '5' },
+                            { label: '10 Users', value: '10' }
+                        ])
+                );
+
+            // Send the control panel to the voice channel's built-in text chat
+            const controlMessage = await voiceChannel.send({
+                embeds: [controlEmbed],
+                components: [buttons, limitMenu]
+            });
+
+            // Pin the control panel message for easy access
+            await controlMessage.pin();
+
+            // Save the channel data to the database
+            db.addChannel(voiceChannel.id, member.id, controlMessage.id);
+
+        } catch (error) {
+            // Log errors during channel creation
+            console.error('Error creating temporary channel:', error);
+        }
+    }
+
+    // Check if a user left a temporary voice channel
+    if (oldState.channelId && oldState.channelId !== newState.channelId) {
+        const record = db.getChannel(oldState.channelId);
+        if (record) {
+            const channel = oldState.channel;
+            // If the channel is now empty, clean it up
+            if (channel && channel.members.size === 0) {
+                try {
+                    // Delete the voice channel from Discord
+                    await channel.delete('Temporary channel empty');
+                    // Remove the record from the database
+                    db.removeChannel(oldState.channelId);
+                    console.log(`Cleaned up empty channel: ${oldState.channelId}`);
+                } catch (error) {
+                    // Log errors during cleanup
+                    console.error(`Error deleting channel ${oldState.channelId}:`, error);
+                }
+            }
+        }
+    }
+});
+
+// Event: Interaction Create (Buttons, Menus, Modals)
+client.on('interactionCreate', async (interaction) => {
+    // Handle Button and Select Menu interactions
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        // Look up the channel record in the database
+        const record = db.getChannel(interaction.channelId);
+
+        // Check if the interaction is happening in a managed channel
+        if (!record) return;
+
+        // Verify if the interacting user is the owner of the channel
+        if (interaction.user.id !== record.owner_id) {
+            return interaction.reply({
+                content: 'You do not own this voice channel.',
+                ephemeral: true
+            });
+        }
+
+        const { customId } = interaction;
+
+        // Handle "Edit Name" button click
+        if (customId === 'manage_name') {
+            // Create a modal for name input
+            const modal = new ModalBuilder()
+                .setCustomId('modal_name_change')
+                .setTitle('Change Channel Name');
+
+            const nameInput = new TextInputBuilder()
+                .setCustomId('new_name')
+                .setLabel('Enter new channel name:')
+                .setStyle(TextInputStyle.Short)
+                .setMinLength(1)
+                .setMaxLength(100)
+                .setPlaceholder('My Awesome Room')
+                .setRequired(true);
+
+            const firstActionRow = new ActionRowBuilder().addComponents(nameInput);
+            modal.addComponents(firstActionRow);
+
+            // Show the modal to the user
+            await interaction.showModal(modal);
+        }
+
+        // Handle "Lock/Unlock" button click (Privacy Toggle)
+        if (customId === 'manage_privacy') {
+            try {
+                const channel = interaction.channel;
+                // Get current permission for @everyone role
+                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+
+                // Toggle between Locked (Connect: false) and Public (Connect: null/inherit)
+                const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+
+                if (isLocked) {
+                    // Unlock: Remove Connect denial
+                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                        Connect: null
+                    });
+                    await interaction.reply({ content: 'Channel is now public.', ephemeral: true });
+                } else {
+                    // Lock: Set Connect to false
+                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                        Connect: false
+                    });
+                    await interaction.reply({ content: 'Channel is now locked.', ephemeral: true });
+                }
+            } catch (error) {
+                console.error('Error toggling privacy:', error);
+                await interaction.reply({ content: 'Failed to update privacy.', ephemeral: true });
+            }
+        }
+
+        // Handle "Set User Limit" select menu
+        if (customId === 'manage_limit') {
+            try {
+                const limit = parseInt(interaction.values[0]);
+                // Update the voice channel's user limit
+                await interaction.channel.setUserLimit(limit);
+                await interaction.reply({ content: `User limit set to ${limit === 0 ? 'unlimited' : limit}.`, ephemeral: true });
+            } catch (error) {
+                console.error('Error setting user limit:', error);
+                await interaction.reply({ content: 'Failed to set user limit.', ephemeral: true });
+            }
+        }
+    }
+
+    // Handle Modal Submissions
+    if (interaction.type === InteractionType.ModalSubmit) {
+        if (interaction.customId === 'modal_name_change') {
+            const newName = interaction.fields.getTextInputValue('new_name');
+            try {
+                // Update the channel name in Discord
+                await interaction.channel.setName(newName);
+                await interaction.reply({ content: `Channel name updated to: ${newName}`, ephemeral: true });
+            } catch (error) {
+                console.error('Error updating channel name:', error);
+                await interaction.reply({ content: 'Failed to update channel name.', ephemeral: true });
+            }
+        }
+    }
+});
+
+// Login to Discord with the provided token
+client.login(process.env.DISCORD_TOKEN);
