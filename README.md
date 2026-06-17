@@ -12,24 +12,36 @@ HubBot is a Discord bot that manages temporary voice channels. When a user joins
 
 ## Setup
 
-1.  **Discord Bot Token**: Create a bot on the [Discord Developer Portal](https://discord.com/developers/applications).
-    - Enable **Guilds** and **Guild Voice States** intents.
-2.  **Configuration**: Copy `.env.example` to `.env` and fill in your details:
-    - `DISCORD_TOKEN`: Your bot token.
-    - `HUB_CHANNEL_ID`: The ID of the voice channel users join to create a room.
-    - `CATEGORY_ID`: The ID of the category where new rooms will be created.
-3.  **Deployment**:
-    ```bash
-    docker-compose up -d
-    ```
+### 1. Discord Developer Portal Configuration
+Create an application on the [Discord Developer Portal](https://discord.com/developers/applications).
 
-## Permissions Needed
+#### OAuth2 Scopes
+- `bot`
+- `applications.commands` (required for buttons/menus/modals to work correctly in some contexts)
 
-The bot requires the following permissions in the target category:
-- Manage Channels
-- Manage Roles (to toggle privacy)
-- Move Members
-- Send Messages
-- Embed Links
-- Read Message History
-- Pin Messages
+#### Privileged Gateway Intents
+- **Guilds**: Required to manage channels.
+- **Guild Voice States**: Required to detect users joining/leaving voice channels.
+
+#### Bot Permissions
+The bot needs the following permissions (assigned in the OAuth2 URL generator or manually in the Hub category):
+- **Manage Channels**: To create and delete temporary rooms.
+- **Manage Roles**: To toggle privacy (Lock/Unlock) by editing role overwrites.
+- **Move Members**: To move users from the Hub to their new room.
+- **View Channel**: To see the Hub and Category.
+- **Connect / Speak**: To operate in voice channels.
+- **Send Messages**: To post the control panel.
+- **Embed Links**: To format the control panel.
+- **Read Message History**: To fetch the control panel for recovery.
+- **Manage Messages**: Required to **Pin** the control panel message.
+
+### 2. Configuration
+Copy `.env.example` to `.env` and fill in your details:
+- `DISCORD_TOKEN`: Your bot token.
+- `HUB_CHANNEL_ID`: The ID of the voice channel users join to create a room.
+- `CATEGORY_ID`: The ID of the category where new rooms will be created.
+
+### 3. Deployment
+```bash
+docker-compose up -d
+```
