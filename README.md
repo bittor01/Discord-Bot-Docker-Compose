@@ -31,7 +31,7 @@ The bot follows the principle of least privilege. It only needs permissions to m
 - **View Channel**: To see the Hub, Category, and static channels.
 - **Send Messages**: To post the control panel and level-up embeds.
 - **Embed Links**: To format embeds.
-- **Manage Messages**: Required to **Pin** the control panel message.
+- **Pin Messages**: Required to **Pin** the control panel message.
 
 ### 2. Gamification System
 HubBot awards XP every minute to users in managed voice channels and configured static channels.
