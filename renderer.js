@@ -23,8 +23,10 @@ async function renderControlPanelImage(members) {
     ctx.fillRect(0, 0, width, height);
 
     // 3. Draw Header
+    // Added fallback font stack for better cross-platform/container support
+    const fontStack = 'sans-serif, "Noto Sans", "DejaVu Sans", "Noto Color Emoji"';
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 22px sans-serif';
+    ctx.font = `bold 22px ${fontStack}`;
     ctx.fillText('Channel Members & Acclimation', padding, 45);
 
     // 4. Iterate through members and draw their status rows
@@ -34,7 +36,7 @@ async function renderControlPanelImage(members) {
         // Draw Member Name
         // We truncate the name if it's too long to prevent overlap with the bar
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 16px sans-serif';
+        ctx.font = `bold 16px ${fontStack}`;
         const nameText = m.name.length > 22 ? m.name.substring(0, 19) + '...' : m.name;
         ctx.fillText(nameText, padding, y);
 
@@ -73,7 +75,7 @@ async function renderControlPanelImage(members) {
 
         // Draw Multiplier Text
         ctx.fillStyle = '#b9bbbe';
-        ctx.font = 'bold 14px sans-serif';
+        ctx.font = `bold 14px ${fontStack}`;
         ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, barX + barWidth + 15, y - 2);
 
         // Draw "LIVE" tag if screensharing
@@ -90,7 +92,7 @@ async function renderControlPanelImage(members) {
             ctx.fill();
 
             ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 11px sans-serif';
+            ctx.font = `bold 11px ${fontStack}`;
             ctx.textAlign = 'center';
             ctx.fillText('LIVE', tagX + tagW / 2, tagY + 15);
             ctx.textAlign = 'left'; // Reset alignment
