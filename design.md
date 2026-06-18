@@ -36,6 +36,7 @@ Table: `session_state`
 - `channel_id`, `acclimation_percent`, `last_seen_timestamp`, `is_sharing_screen`
 
 ## UI & Rendering
+- **Category Hierarchy**: Managed voice channels and associated text channels (output, leaderboards) may coexist within the same category. The bot specifically filters for `GuildVoice` type during cleanup and recovery to avoid affecting non-voice channels.
 - **Pinned Embed**: Refreshes every 10 seconds with a Canvas-rendered image showing member acclimation bars and multipliers.
 - **Stats Card**: Canvas-rendered image for `/stats` showing level, XP progress, and achievements.
 - **Rate Limiting**: Global "Leaky Bucket" limiter ensures Discord API calls stay under 25/second.
