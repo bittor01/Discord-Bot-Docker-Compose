@@ -48,15 +48,6 @@ function getXPForLevel(level) {
     return Math.floor(base * Math.pow(ramp, level - 1));
 }
 
-// Helper: Calculate the cumulative XP needed to reach a level
-function getTotalXPForLevel(level) {
-    let total = 0;
-    for (let i = 1; i <= level; i++) {
-        total += getXPForLevel(i);
-    }
-    return total;
-}
-
 // Helper: Calculate level from total XP
 function getLevelFromXP(totalXP) {
     let level = 0;
@@ -78,15 +69,16 @@ client.once('ready', async () => {
     setInterval(async () => {
         try {
             // Configuration for XP
-            const xpPerSecond = parseFloat(process.env.XP_PER_SECOND) || 1;
-            const multiplierMuted = parseFloat(process.env.XP_MULTIPLIER_MUTED) || 0.5;
-            const multiplierDeafened = parseFloat(process.env.XP_MULTIPLIER_DEAFENED) || 0.1;
+            const xpPerSecond = process.env.XP_PER_SECOND !== undefined ? parseFloat(process.env.XP_PER_SECOND) : 1;
+            const multiplierMuted = process.env.XP_MULTIPLIER_MUTED !== undefined ? parseFloat(process.env.XP_MULTIPLIER_MUTED) : 0.5;
+            const multiplierDeafened = process.env.XP_MULTIPLIER_DEAFENED !== undefined ? parseFloat(process.env.XP_MULTIPLIER_DEAFENED) : 0.1;
             const cooldownMs = (parseInt(process.env.NOTIFICATION_COOLDOWN_MINUTES) || 15) * 60 * 1000;
-            const staticChannels = (process.env.STATIC_CHANNELS || '').split(',').filter(id => id.length > 0);
+            const staticChannels = (process.env.STATIC_CHANNELS || '').split(',').map(id => id.trim()).filter(id => id.length > 0);
 
             // Fetch all managed channels from database
             const activeChannels = db.getAllChannels().map(c => c.voice_channel_id);
-            const validChannels = [...activeChannels, ...staticChannels];
+            // Use a Set to ensure we don't process the same channel twice
+            const validChannels = new Set([...activeChannels, ...staticChannels]);
 
             for (const channelId of validChannels) {
                 const channel = await client.channels.fetch(channelId).catch(() => null);

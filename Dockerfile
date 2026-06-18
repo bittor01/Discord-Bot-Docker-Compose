@@ -11,7 +11,8 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 
 # Install production dependencies only
-RUN npm ci --only=production
+# Using --omit=dev as --only=production is deprecated in newer npm versions
+RUN npm ci --omit=dev
 
 # Copy the rest of the application code
 COPY . .
