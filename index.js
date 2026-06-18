@@ -62,19 +62,44 @@ async function refreshControlPanel(channel) {
         const message = await limiter.execute(() => channel.messages.fetch(record.control_message_id).catch(() => null));
         if (!message) return;
 
-        const members = [];
+        // 1. Gather session and presence data for all members currently in the VC.
+        const membersData = [];
         const channelMembersArray = Array.from(channel.members.values());
         for (const member of channelMembersArray) {
-            const session = xpManager.userSessions.get(member.id) || { acclimation: 0, isSharing: false };
-            members.push({
+            // Retrieve their session (or create a temporary one if not yet tracked)
+            const session = xpManager.userSessions.get(member.id) || {
+                acclimation: 0,
+                isSharing: false,
+                sessionStartTimestamp: Date.now()
+            };
+            membersData.push({
+                userId: member.id,
                 name: member.displayName,
                 acclimation: session.acclimation,
                 isSharing: member.voice.streaming || session.isSharing,
-                multiplier: 1.0
+                sessionStartTimestamp: session.sessionStartTimestamp,
+                channelId: channel.id
             });
         }
 
-        const imageBuffer = await runRenderTask('controlPanel', members);
+        // 2. Sort members by "Seniority" (King of the Hill logic).
+        // Earliest joiners (lowest timestamp) appear at the top of the list.
+        membersData.sort((a, b) => a.sessionStartTimestamp - b.sessionStartTimestamp);
+
+        // 3. Calculate real-time XP multipliers for each member to display in the UI.
+        const renderedMembers = [];
+        for (const mData of membersData) {
+            const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter);
+            renderedMembers.push({
+                name: mData.name,
+                acclimation: mData.acclimation,
+                isSharing: mData.isSharing,
+                multiplier: mult
+            });
+        }
+
+        // 4. Generate the control panel image with sorted members and accurate multipliers.
+        const imageBuffer = await runRenderTask('controlPanel', renderedMembers);
         // Explicitly wrap in Buffer.from to fix ReqResourceType error
         const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { name: 'status.png' });
 

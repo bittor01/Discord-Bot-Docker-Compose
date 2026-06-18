@@ -73,25 +73,78 @@ function persistSession(userId, session) {
     );
 }
 
+/**
+ * Calculates the total XP multiplier for a user based on their acclimation,
+ * grouping bonus, and voice state (mute/deaf/screenshare).
+ */
+async function calculateMultiplier(client, userId, channelMembers, limiter) {
+    // 1. Find the current user's session data from the provided member list
+    const member = channelMembers.find(m => m.userId === userId);
+    // If not found, they get no XP
+    if (!member) return 0;
+
+    // 2. Sort all members in the channel by acclimation (descending)
+    // to calculate the fallout-style group bonus correctly.
+    const sortedMembers = [...channelMembers].sort((a, b) => b.acclimation - a.acclimation);
+
+    // 3. Calculate Group Bonus
+    // Formula: 1 + sum(bonusStep^i * memberAcclimation) for all OTHER members
+    let groupSum = 0;
+    const otherMembers = sortedMembers.filter(m => m.userId !== userId);
+    for (let j = 0; j < otherMembers.length; j++) {
+        const bonusStep = Math.pow(XP_GROUP_BONUS_STEP, j + 1);
+        groupSum += bonusStep * otherMembers[j].acclimation;
+    }
+
+    // 4. Combine with user's own acclimation
+    // A user with 0% acclimation gets 0 XP regardless of the group size.
+    const baseGroupMult = 1.0 + groupSum;
+    const finalGroupMult = member.acclimation * baseGroupMult;
+
+    // 5. Apply Voice State Modifiers (Mute/Deaf)
+    let individualMult = 1.0;
+    const guildMember = await fetchGuildMember(client, member.channelId || member.channel_id, userId, limiter);
+    if (guildMember) {
+        if (guildMember.voice.deaf || guildMember.voice.selfDeaf) {
+            // Deafened users get a significant penalty (e.g., 0.1x)
+            individualMult *= (parseFloat(process.env.XP_MULTIPLIER_DEAFENED) || 0.1);
+        } else if (guildMember.voice.mute || guildMember.voice.selfMute) {
+            // Muted users get a moderate penalty (e.g., 0.5x)
+            individualMult *= (parseFloat(process.env.XP_MULTIPLIER_MUTED) || 0.5);
+        }
+    }
+
+    // 6. Apply Screenshare Bonus
+    // Users sharing their screen get a boost (e.g., 1.5x)
+    if (member.isSharing) individualMult *= XP_SCREENSHARE_MULT;
+
+    // Return the final combined multiplier
+    return finalGroupMult * individualMult;
+}
+
 async function tick(client, limiter) {
     const now = Date.now();
     const TICK_INTERVAL_MS = 10000;
 
+    // First, update all active sessions (decay away-time, grow acclimation)
     for (const [userId, session] of userSessions) {
         if (session.leaveTimestamp) {
             const awayTime = now - session.leaveTimestamp;
             const gracePeriodHold = GRACE_PERIOD_MS;
             const gracePeriodDecay = GRACE_PERIOD_MS;
 
+            // If they've been gone past the grace period, wipe the session
             if (awayTime > gracePeriodHold + gracePeriodDecay) {
                 userSessions.delete(userId);
                 db.clearSession(userId);
                 continue;
             } else if (awayTime > gracePeriodHold) {
+                // Decay acclimation after the initial hold period
                 const decayProgress = (awayTime - gracePeriodHold) / gracePeriodDecay;
                 session.acclimation = Math.max(0, session.acclimation * (1 - decayProgress));
             }
         } else {
+            // Grow acclimation while they are active in the channel
             const timePassed = now - session.lastUpdate;
             const acclimationGain = timePassed / ACCLIMATION_TIME_MS;
             session.acclimation = Math.min(1.0, session.acclimation + acclimationGain);
@@ -100,53 +153,34 @@ async function tick(client, limiter) {
         persistSession(userId, session);
     }
 
+    // Group active members by channel
     const channelGroups = new Map();
     for (const [userId, session] of userSessions) {
         if (session.leaveTimestamp) continue;
         if (!channelGroups.has(session.channelId)) {
             channelGroups.set(session.channelId, []);
         }
-        channelGroups.get(session.channelId).push({ userId, acclimation: session.acclimation, isSharing: session.isSharing, sessionStartTimestamp: session.sessionStartTimestamp });
+        // Include enough data for the multiplier calculation
+        channelGroups.get(session.channelId).push({
+            userId,
+            acclimation: session.acclimation,
+            isSharing: session.isSharing,
+            channelId: session.channelId
+        });
     }
 
+    // Award XP to every active member
     for (const [channelId, members] of channelGroups) {
-        members.sort((a, b) => b.acclimation - a.acclimation);
+        for (const member of members) {
+            // Calculate real-time multiplier using the extracted function
+            const totalMultiplier = await calculateMultiplier(client, member.userId, members, limiter);
 
-        for (let i = 0; i < members.length; i++) {
-            const member = members[i];
-            const userId = member.userId;
-
-            let groupSum = 0;
-            const otherMembers = members.filter(m => m.userId !== userId);
-            for (let j = 0; j < otherMembers.length; j++) {
-                const bonusStep = Math.pow(XP_GROUP_BONUS_STEP, j + 1);
-                groupSum += bonusStep * otherMembers[j].acclimation;
-            }
-
-            const baseGroupMult = 1.0 + groupSum;
-            const finalGroupMult = member.acclimation * baseGroupMult;
-
-            let individualMult = 1.0;
-            const guildMember = await fetchGuildMember(client, channelId, userId, limiter);
-            if (guildMember) {
-                if (guildMember.voice.deaf || guildMember.voice.selfDeaf) {
-                    individualMult *= (parseFloat(process.env.XP_MULTIPLIER_DEAFENED) || 0.1);
-                } else if (guildMember.voice.mute || guildMember.voice.selfMute) {
-                    individualMult *= (parseFloat(process.env.XP_MULTIPLIER_MUTED) || 0.5);
-                }
-            }
-
-            if (member.isSharing) individualMult *= XP_SCREENSHARE_MULT;
-
-            const totalMultiplier = finalGroupMult * individualMult;
+            // Calculate XP gain (Base * Time * Multiplier)
             const xpGain = XP_PER_SECOND * (TICK_INTERVAL_MS / 1000) * totalMultiplier;
 
             if (xpGain > 0) {
-                awardXP(userId, xpGain);
+                awardXP(member.userId, xpGain);
             }
-
-            // Check achievements (moved to index.js to handle circularity or just pass achievementManager here)
-            // For now, we'll return the data to index.js or use an event
         }
     }
 }
@@ -203,6 +237,7 @@ module.exports = {
     updateUserPresence,
     handleUserLeave,
     tick,
+    calculateMultiplier,
     getLevelFromXP,
     getXPForLevel,
     awardXP,
