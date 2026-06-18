@@ -92,7 +92,7 @@ async function refreshControlPanel(channel) {
             // Optimization: Since we already have the 'channel' object with its 'members' cache,
             // we pass the GuildMember object directly to avoid redundant API calls.
             const guildMember = channel.members.get(mData.userId);
-            const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
+            const multData = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
 
             // Fetch the user's levels from the database.
             const user = db.getUser(mData.userId) || { level: 0, weekly_level: 0, monthly_level: 0, xp: 0, weekly_xp: 0, monthly_xp: 0 };
@@ -112,7 +112,8 @@ async function refreshControlPanel(channel) {
                 name: mData.name,
                 progress: Math.min(1.0, Math.max(0, progress)),
                 isSharing: mData.isSharing,
-                multiplier: mult,
+                multiplier: multData.total,
+                buffs: multData.buffs,
                 level: displayLevel
             });
         }

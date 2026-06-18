@@ -27,76 +27,89 @@ async function renderControlPanelImage(members) {
 
     // 4. Iterate through members and draw their status rows
     members.forEach((m, i) => {
+        // Vertical position for this member row
         const y = padding + 20 + i * rowHeight;
 
-        // Draw Level Number
+        // --- DRAW LEVEL ---
         ctx.fillStyle = '#faa61a'; // Gold/Yellow for levels
         ctx.font = `bold 14px ${fontStack}`;
         const levelText = `${m.level}`;
         ctx.fillText(levelText, padding, y);
 
-        // Draw Member Name
+        // --- DRAW NAME ---
         ctx.fillStyle = '#ffffff';
         ctx.font = `bold 16px ${fontStack}`;
-        const nameText = m.name.length > 18 ? m.name.substring(0, 16) + '...' : m.name;
-        ctx.fillText(nameText, padding + 35, y);
+        // Truncate name slightly more to save space
+        const nameText = m.name.length > 16 ? m.name.substring(0, 14) + '..' : m.name;
+        ctx.fillText(nameText, padding + 30, y);
 
-        // Define Bar Dimensions
-        const barX = padding + 190;
-        const barY = y - 20;
-        const barWidth = 300;
-        const barHeight = 24; // Taller bar for a "solid" feel
+        // --- DRAW STUMPY XP BAR ---
+        // Narrower bar to fit charms on the same line
+        const barX = padding + 160;
+        const barY = y - 18;
+        const barWidth = 180; // Reduced from 300
+        const barHeight = 20; // Slightly shorter
 
-        // Draw Bar Background (Gray track)
+        // Bar background
         ctx.fillStyle = '#4f545c';
         ctx.beginPath();
-        ctx.roundRect(barX, barY, barWidth, barHeight, 4); // Rounded corners for modern look
+        ctx.roundRect(barX, barY, barWidth, barHeight, 3);
         ctx.fill();
 
-        // Draw XP Fill (Red -> Yellow -> Green based on progress)
+        // Bar fill progress
         if (m.progress > 0) {
-            let fillColor;
-            if (m.progress < 0.35) {
-                fillColor = '#ff4742'; // Red for low progress
-            } else if (m.progress < 0.75) {
-                fillColor = '#faa61a'; // Yellow/Orange for mid-range
-            } else {
-                fillColor = '#43b581'; // Green for high progress
-            }
-
+            let fillColor = m.progress < 0.35 ? '#ff4742' : (m.progress < 0.75 ? '#faa61a' : '#43b581');
             ctx.fillStyle = fillColor;
             ctx.beginPath();
-            // Ensure the fill also has rounded corners.
-            const fillWidth = Math.max(8, barWidth * m.progress);
-            ctx.roundRect(barX, barY, fillWidth, barHeight, 4);
+            const fillWidth = Math.max(6, barWidth * m.progress);
+            ctx.roundRect(barX, barY, fillWidth, barHeight, 3);
             ctx.fill();
         }
 
-        // Draw Multiplier Text
-        ctx.fillStyle = '#b9bbbe';
-        ctx.font = `bold 14px ${fontStack}`;
-        // Spacing the multiplier slightly more and aligning it better
-        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, barX + barWidth + 20, y);
+        // --- DRAW CHARMS / BUFFS ---
+        let charmX = barX + barWidth + 15;
+        const charmY = y - 18;
+        const charmSize = 20;
+        const charmSpacing = 5;
 
-        // Draw "LIVE" tag if screensharing
-        // Replaces the "📺" emoji which often fails to render (showing squares) on Linux servers
-        if (m.isSharing) {
-            const tagX = barX + barWidth + 65;
-            const tagY = y - 20;
-            const tagW = 45;
-            const tagH = 22;
+        (m.buffs || []).forEach(buff => {
+            // Determine charm color and symbol based on type
+            let color = '#43b581'; // Default green (buff)
+            let symbol = '';
 
-            ctx.fillStyle = '#ff73fa'; // Screenshare purple
+            if (buff.type === 'debuff') color = '#ff4742'; // Red (debuff)
+            if (buff.type === 'neutral') color = '#b9bbbe'; // Gray (neutral)
+
+            // Define symbols for each buff ID
+            switch (buff.id) {
+                case 'group': symbol = 'G'; break;
+                case 'sharing': symbol = 'S'; color = '#ff73fa'; break; // Screenshare purple
+                case 'ramp': symbol = 'R'; break;
+                case 'mute': symbol = 'M'; break;
+                case 'deaf': symbol = 'D'; break;
+            }
+
+            // Draw charm circle
+            ctx.fillStyle = color;
             ctx.beginPath();
-            ctx.roundRect(tagX, tagY, tagW, tagH, 3);
+            ctx.arc(charmX + charmSize / 2, charmY + charmSize / 2, charmSize / 2, 0, Math.PI * 2);
             ctx.fill();
 
+            // Draw charm symbol text
             ctx.fillStyle = '#ffffff';
-            ctx.font = `bold 11px ${fontStack}`;
+            ctx.font = `bold 10px ${fontStack}`;
             ctx.textAlign = 'center';
-            ctx.fillText('LIVE', tagX + tagW / 2, tagY + 15);
-            ctx.textAlign = 'left'; // Reset alignment
-        }
+            ctx.fillText(symbol, charmX + charmSize / 2, charmY + charmSize / 2 + 4);
+            ctx.textAlign = 'left';
+
+            charmX += charmSize + charmSpacing;
+        });
+
+        // --- DRAW MULTIPLIER ---
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold 14px ${fontStack}`;
+        // Position multiplier after the charms
+        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, charmX + 10, y);
     });
 
     return canvas.toBuffer('image/png');

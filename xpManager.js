@@ -128,8 +128,32 @@ async function calculateMultiplier(client, userId, channelMembers, limiter, guil
     // Users sharing their screen get a boost (e.g., 1.5x)
     if (member.isSharing) individualMult *= XP_SCREENSHARE_MULT;
 
-    // Return the final combined multiplier
-    return finalGroupMult * individualMult;
+    // 7. Identify all active "Buffs" or "Modifiers" affecting the rate.
+    const buffs = [];
+
+    // Group Bonus
+    if (groupSum > 0) buffs.push({ id: 'group', value: groupSum, type: 'buff' });
+
+    // Acclimation (if not at 100%, it's effectively a penalty/ramp)
+    if (member.acclimation < 1.0) buffs.push({ id: 'ramp', value: member.acclimation, type: 'neutral' });
+
+    // Screenshare Bonus
+    if (member.isSharing) buffs.push({ id: 'sharing', value: XP_SCREENSHARE_MULT, type: 'buff' });
+
+    // Voice State Penalties
+    if (guildMember) {
+        if (guildMember.voice.deaf || guildMember.voice.selfDeaf) {
+            buffs.push({ id: 'deaf', value: (parseFloat(process.env.XP_MULTIPLIER_DEAFENED) || 0.1), type: 'debuff' });
+        } else if (guildMember.voice.mute || guildMember.voice.selfMute) {
+            buffs.push({ id: 'mute', value: (parseFloat(process.env.XP_MULTIPLIER_MUTED) || 0.5), type: 'debuff' });
+        }
+    }
+
+    // Return the final combined multiplier and the list of active charms.
+    return {
+        total: finalGroupMult * individualMult,
+        buffs
+    };
 }
 
 async function tick(client, limiter) {
@@ -212,10 +236,10 @@ async function tick(client, limiter) {
             const guildMember = channel?.members.get(member.userId);
 
             // Calculate real-time multiplier using the extracted function (passing the pre-fetched member)
-            const totalMultiplier = await calculateMultiplier(client, member.userId, members, limiter, guildMember);
+            const multData = await calculateMultiplier(client, member.userId, members, limiter, guildMember);
 
             // Calculate XP gain (Base * Time * Multiplier)
-            const xpGain = XP_PER_SECOND * (TICK_INTERVAL_MS / 1000) * totalMultiplier;
+            const xpGain = XP_PER_SECOND * (TICK_INTERVAL_MS / 1000) * multData.total;
 
             if (xpGain > 0) {
                 awardXP(member.userId, xpGain);
