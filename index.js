@@ -207,11 +207,14 @@ client.once('ready', async () => {
     const HUB_CHANNEL_ID = process.env.HUB_CHANNEL_ID;
 
     try {
-        const cleanupDelayMinutes = parseInt(process.env.EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES) || 0;
         // Fetch all channels in the guild to find channels in our category
         const category = await client.channels.fetch(CATEGORY_ID).catch(() => null);
         if (category && category.type === ChannelType.GuildCategory) {
             const guild = category.guild;
+
+            // Fetch all channels in the guild to ensure cache is populated
+            await guild.channels.fetch();
+
             // Get all channels that belong to this category
             const channelsInCategory = guild.channels.cache.filter(c => c.parentId === CATEGORY_ID);
 
@@ -223,17 +226,12 @@ client.once('ready', async () => {
                 if (channel.type !== ChannelType.GuildVoice) continue;
 
                 // Check if the channel is empty
+                // On startup, we ALWAYS delete empty rooms immediately regardless of cleanup delay
                 if (channel.members.size === 0) {
-                    if (cleanupDelayMinutes <= 0) {
-                        console.log(`Deleting empty channel ${channel.name} (${id}) found in category during recovery.`);
-                        await channel.delete('Recovery: Channel was empty').catch(err => console.error(`Failed to delete ${id}:`, err));
-                        db.removeChannel(id);
-                    } else {
-                        // For delayed cleanup, we mark it as empty now.
-                        // It will be cleaned up in the next background task run if it stays empty.
-                        emptyChannels.set(id, Date.now());
-                        console.log(`Channel ${channel.name} (${id}) found empty during recovery. Cleanup timer started.`);
-                    }
+                    console.log(`Deleting empty channel ${channel.name} (${id}) found in category during recovery.`);
+                    await channel.delete('Recovery: Channel was empty').catch(err => console.error(`Failed to delete ${id}:`, err));
+                    db.removeChannel(id);
+                    emptyChannels.delete(id);
                 } else {
                     console.log(`Channel ${channel.name} (${id}) is active with ${channel.members.size} members.`);
                 }
