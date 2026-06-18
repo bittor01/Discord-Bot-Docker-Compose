@@ -6,5 +6,6 @@ services:
     env_file:
       - .env
     volumes:
+      - .:/usr/src/app
       - ./data:/usr/src/app/data
     # No ports exposed as this is a Discord Gateway bot

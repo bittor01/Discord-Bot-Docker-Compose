@@ -27,11 +27,8 @@ WORKDIR /usr/src/app
 # Copy package manifest files
 COPY package*.json ./
 
-# Set environment to production before installing dependencies
-ENV NODE_ENV=production
-
 # Install all dependencies (including dev) needed for native builds
-RUN npm ci --omit=dev --unsafe-perm
+RUN npm ci --unsafe-perm
 
 # Copy the rest of the application code
 COPY . .
@@ -41,6 +38,7 @@ RUN mkdir -p /usr/src/app/data
 
 # Environment variables
 ENV DATABASE_PATH=/usr/src/app/data/state.db
+ENV NODE_ENV=production
 
 # Define volume for database persistence
 VOLUME [ "/usr/src/app/data" ]
