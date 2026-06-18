@@ -20,19 +20,35 @@ function init() {
     }
 }
 
+/**
+ * Checks for and awards achievements.
+ * Returns an array of newly earned achievement objects.
+ */
 async function checkAchievements(userId, session, othersInChannel) {
+    const earned = [];
+
+    // Show and Tell check
     if (session.isSharing) {
-        await awardAchievement(userId, 'show_and_tell');
+        const a1 = await awardAchievement(userId, 'show_and_tell');
+        if (a1) earned.push(a1);
+
+        // Screen Party check
         const othersSharing = othersInChannel.filter(m => m.isSharing).length;
         if (othersSharing > 0) {
-            await awardAchievement(userId, 'screen_party');
+            const a2 = await awardAchievement(userId, 'screen_party');
+            if (a2) earned.push(a2);
         }
     }
+
+    // Long Haul check
     if (!session.leaveTimestamp && session.sessionStartTimestamp) {
         if (Date.now() - session.sessionStartTimestamp >= 2 * 60 * 60 * 1000) {
-            await awardAchievement(userId, 'long_haul');
+            const a3 = await awardAchievement(userId, 'long_haul');
+            if (a3) earned.push(a3);
         }
     }
+
+    return earned;
 }
 
 async function awardAchievement(userId, achievementId, periodKey = 'lifetime') {
@@ -41,6 +57,7 @@ async function awardAchievement(userId, achievementId, periodKey = 'lifetime') {
         console.log(`User ${userId} earned achievement: ${achievementId}`);
         const ach = ACHIEVEMENTS.find(a => a.id === achievementId);
         if (ach && ach.xp_reward > 0) {
+            // Give the reward XP
             xpManager.awardXP(userId, ach.xp_reward);
         }
         return ach;
@@ -59,6 +76,7 @@ async function checkResets(client, runRenderTask, limiter) {
 
     // Weekly reset check
     if (now.getDay() === weeklyResetDay && (now - lastWeekly > 24 * 60 * 60 * 1000)) {
+        // Post leaderboard before reset
         if (process.env.WEEKLY_LEADERBOARD_ENABLED === '1') {
             await postLeaderboard(client, 'weekly', runRenderTask, limiter);
         }
@@ -68,6 +86,7 @@ async function checkResets(client, runRenderTask, limiter) {
 
     // Monthly reset check
     if (now.getDate() === monthlyResetDay && (now.getMonth() !== lastMonthly.getMonth() || now.getFullYear() !== lastMonthly.getFullYear())) {
+        // Post leaderboard before reset
         if (process.env.MONTHLY_LEADERBOARD_ENABLED === '1') {
             await postLeaderboard(client, 'monthly', runRenderTask, limiter);
         }
@@ -77,6 +96,7 @@ async function checkResets(client, runRenderTask, limiter) {
 }
 
 async function postLeaderboard(client, period, runRenderTask, limiter) {
+    // Get specific channel for this period
     const channelId = process.env[`${period.toUpperCase()}_LEADERBOARD_CHANNEL_ID`];
     if (!channelId) return;
 
@@ -86,17 +106,20 @@ async function postLeaderboard(client, period, runRenderTask, limiter) {
     const top = db.getLeaderboard(period, 10);
     if (top.length === 0) return;
 
+    // Prepare data for rendering
     const entries = [];
     for (const entry of top) {
         const user = await client.users.fetch(entry.user_id).catch(() => ({ username: 'Unknown User' }));
         entries.push({ username: user.username, xp: entry.xp, level: entry.level });
     }
 
+    // Render the Hall of Fame image
     const buffer = await runRenderTask('leaderboard', { period, entries });
     const attachment = new AttachmentBuilder(buffer, { name: 'leaderboard.png' });
 
+    // Send via rate limiter
     await limiter.execute(() => channel.send({
-        content: `🏆 **${period.toUpperCase()} LEADERBOARD SUMMARY** 🏆`,
+        content: `🏆 **${period.toUpperCase()} HALL OF FAME SUMMARY** 🏆`,
         files: [attachment]
     }));
 }
