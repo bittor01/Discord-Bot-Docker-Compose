@@ -256,7 +256,9 @@ client.once(Events.ClientReady, async () => {
                 if (now - emptySince >= cleanupDelayMs) {
                     const channel = await client.channels.fetch(channelId).catch(() => null);
                     if (channel) {
-                        await limiter.execute(() => channel.delete('Empty cleanup'));
+                        await limiter.execute(() => channel.delete('Empty cleanup')).catch(err => {
+                            console.warn(`Failed to delete empty channel ${channelId}:`, err.message);
+                        });
                     }
                     db.removeChannel(channelId);
                     emptyChannels.delete(channelId);
@@ -281,7 +283,9 @@ client.once(Events.ClientReady, async () => {
                 if (id === HUB_CHANNEL_ID) continue;
                 if (channel.type !== ChannelType.GuildVoice) continue;
                 if (channel.members.size === 0) {
-                    await limiter.execute(() => channel.delete('Recovery'));
+                    await limiter.execute(() => channel.delete('Recovery')).catch(err => {
+                        console.warn(`Failed to delete recovery channel ${id}:`, err.message);
+                    });
                     db.removeChannel(id);
                 } else {
                     for (const [memberId, member] of channel.members) {
@@ -304,15 +308,16 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             const voiceChannel = await limiter.execute(() => newState.guild.channels.create({
                 name: `${member.displayName}'s Room`,
                 type: ChannelType.GuildVoice,
-                parent: CATEGORY_ID,
-                permissionOverwrites: [
-                    {
-                        id: newState.guild.roles.everyone.id,
-                        deny: [PermissionFlagsBits.ViewChannel]
-                    }
-                ]
+                parent: CATEGORY_ID
             }));
-            await limiter.execute(() => member.voice.setChannel(voiceChannel));
+            // Sync with category permissions first
+            try { await limiter.execute(() => voiceChannel.lockPermissions()); } catch (e) {}
+            // Then apply Private starting state
+            try { await limiter.execute(() => voiceChannel.permissionOverwrites.edit(newState.guild.roles.everyone, { ViewChannel: false })); } catch (e) {}
+
+            await limiter.execute(() => member.voice.setChannel(voiceChannel)).catch(error => {
+                console.error(`Failed to move member ${member.id} to new room:`, error);
+            });
             const controlEmbed = new EmbedBuilder().setTitle('Voice Channel Control Panel').setDescription('Manage your channel below.').setColor(0x00AE86);
             const row1 = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
