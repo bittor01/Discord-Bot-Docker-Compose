@@ -86,7 +86,7 @@ async function refreshControlPanel(channel) {
         // Earliest joiners (lowest timestamp) appear at the top of the list.
         membersData.sort((a, b) => a.sessionStartTimestamp - b.sessionStartTimestamp);
 
-        // 3. Calculate real-time XP multipliers for each member to display in the UI.
+        // 3. Calculate real-time XP multipliers and gather levels for each member to display in the UI.
         const renderedMembers = [];
         for (const mData of membersData) {
             // Optimization: Since we already have the 'channel' object with its 'members' cache,
@@ -94,11 +94,20 @@ async function refreshControlPanel(channel) {
             const guildMember = channel.members.get(mData.userId);
             const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
 
+            // Fetch the user's levels from the database.
+            const user = db.getUser(mData.userId);
+
+            // Logic for "shortest term level": Weekly > Monthly > Lifetime.
+            // If weekly level is enabled (non-zero), use it. Otherwise try monthly, then lifetime.
+            const displayLevel = user.weekly_level > 0 ? user.weekly_level :
+                               (user.monthly_level > 0 ? user.monthly_level : user.level);
+
             renderedMembers.push({
                 name: mData.name,
                 acclimation: mData.acclimation,
                 isSharing: mData.isSharing,
-                multiplier: mult
+                multiplier: mult,
+                level: displayLevel
             });
         }
 

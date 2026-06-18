@@ -22,27 +22,27 @@ async function renderControlPanelImage(members) {
     ctx.fillStyle = '#23272a';
     ctx.fillRect(0, 0, width, height);
 
-    // 3. Draw Header
-    // Added fallback font stack for better cross-platform/container support
+    // 3. Setup Font Stack
     const fontStack = 'sans-serif, "Noto Sans", "DejaVu Sans", "Noto Color Emoji"';
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `bold 22px ${fontStack}`;
-    ctx.fillText('Channel Members & Acclimation', padding, 45);
 
     // 4. Iterate through members and draw their status rows
     members.forEach((m, i) => {
-        const y = 90 + i * rowHeight;
+        const y = padding + 20 + i * rowHeight;
+
+        // Draw Level
+        ctx.fillStyle = '#faa61a'; // Gold/Yellow for levels
+        ctx.font = `bold 14px ${fontStack}`;
+        const levelText = `L${m.level}`;
+        ctx.fillText(levelText, padding, y);
 
         // Draw Member Name
-        // We truncate the name if it's too long to prevent overlap with the bar
         ctx.fillStyle = '#ffffff';
         ctx.font = `bold 16px ${fontStack}`;
-        const nameText = m.name.length > 22 ? m.name.substring(0, 19) + '...' : m.name;
-        ctx.fillText(nameText, padding, y);
+        const nameText = m.name.length > 16 ? m.name.substring(0, 14) + '...' : m.name;
+        ctx.fillText(nameText, padding + 60, y);
 
         // Define Bar Dimensions
-        // Moved bar further right (barX = 230) to give names more room
-        const barX = 230;
+        const barX = padding + 220;
         const barY = y - 20;
         const barWidth = 300;
         const barHeight = 24; // Taller bar for a "solid" feel
@@ -76,7 +76,8 @@ async function renderControlPanelImage(members) {
         // Draw Multiplier Text
         ctx.fillStyle = '#b9bbbe';
         ctx.font = `bold 14px ${fontStack}`;
-        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, barX + barWidth + 15, y - 2);
+        // Spacing the multiplier slightly more and aligning it better
+        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, barX + barWidth + 20, y);
 
         // Draw "LIVE" tag if screensharing
         // Replaces the "📺" emoji which often fails to render (showing squares) on Linux servers
@@ -98,14 +99,6 @@ async function renderControlPanelImage(members) {
             ctx.textAlign = 'left'; // Reset alignment
         }
     });
-
-    // 5. Final Header Separator
-    ctx.strokeStyle = '#2c2f33';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(padding, 60);
-    ctx.lineTo(width - padding, 60);
-    ctx.stroke();
 
     return canvas.toBuffer('image/png');
 }

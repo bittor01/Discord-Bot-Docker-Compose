@@ -45,6 +45,7 @@ function updateUserPresence(userId, channelId, isSharing = false) {
         if (session.channelId !== channelId) {
             session.channelId = channelId;
             session.sessionStartTimestamp = now; // New session on move
+            session.acclimation = 0; // Reset acclimation when joining a new channel
         }
         session.leaveTimestamp = null;
         session.isSharing = isSharing;
@@ -103,9 +104,13 @@ async function calculateMultiplier(client, userId, channelMembers, limiter, guil
     }
 
     // 4. Combine with user's own acclimation
-    // A user with 0% acclimation gets 0 XP regardless of the group size.
+    // We want the group bonus to apply fully even at low acclimation,
+    // but the user's BASE gain still scales with their own acclimation.
     const baseGroupMult = 1.0 + groupSum;
-    const finalGroupMult = member.acclimation * baseGroupMult;
+    // New logic: (0.1 base + 0.9 * acclimation) ensures even newcomers get *some* XP
+    // and feel the effect of the group multiplier immediately.
+    const acclimationFactor = 0.1 + (0.9 * member.acclimation);
+    const finalGroupMult = acclimationFactor * baseGroupMult;
 
     // 5. Apply Voice State Modifiers (Mute/Deaf)
     let individualMult = 1.0;
