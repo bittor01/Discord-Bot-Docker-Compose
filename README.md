@@ -35,7 +35,16 @@ The bot follows the principle of least privilege. It only needs permissions to m
 - **Pin Messages**: Required to **Pin** the control panel message.
 - **Read Message History**: Often required for the bot to successfully pin messages.
 
-### 2. Gamification System
+### 2. Voice Channel Controls
+Owners and members currently in the voice channel can manage the room via the control panel:
+- **Edit Name**: Change the channel name (subject to Discord rate limits).
+- **Set Limit**: Adjust the maximum number of users (0-99).
+- **Lock/Unlock**: Toggle whether new users can join the channel.
+- **Hide/Show**: Toggle whether the channel is visible to users not already in it.
+- **Dynamic Updates**: The control panel embed automatically updates to reflect the current room settings.
+- **Feedback**: Setting changes are announced in the text chat to keep members informed.
+
+### 3. Gamification System
 HubBot awards XP every minute to users in managed voice channels and configured static channels.
 - **XP Scaling**: Levels grow by a configurable percentage (e.g., 10% more XP per level).
 - **Voice State Modifiers**: XP gain is reduced if a user is muted or deafened.

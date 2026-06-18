@@ -64,6 +64,54 @@ function getLevelFromXP(totalXP) {
     return level;
 }
 
+/**
+ * Helper: Refresh the control panel embed with current channel state.
+ * @param {VoiceChannel} channel The voice channel to refresh.
+ */
+async function refreshControlPanel(channel) {
+    try {
+        // Look up the channel record to find the control message ID
+        const record = db.getChannel(channel.id);
+        if (!record || !record.control_message_id) return;
+
+        // Fetch the control message
+        const message = await channel.messages.fetch(record.control_message_id).catch(() => null);
+        if (!message) return;
+
+        // Get current channel state
+        const userLimit = channel.userLimit;
+        const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
+        const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+        const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+
+        // Build status strings
+        const privacyStatus = isLocked ? '🔒 Locked' : '🔓 Public';
+        const visibilityStatus = isHidden ? '👻 Hidden' : '👁️ Visible';
+        const limitStatus = userLimit === 0 ? 'Unlimited' : `${userLimit} Users`;
+
+        // Create the updated Embed
+        const updatedEmbed = new EmbedBuilder()
+            .setTitle('Voice Channel Control Panel')
+            .setDescription('Use the buttons below to manage this voice channel.')
+            .setColor(isLocked ? 0xff4742 : 0x00AE86)
+            .addFields(
+                { name: 'Channel Name', value: `${channel.name}`, inline: true },
+                { name: 'User Limit', value: limitStatus, inline: true },
+                { name: 'Privacy', value: privacyStatus, inline: true },
+                { name: 'Visibility', value: visibilityStatus, inline: true },
+                { name: 'Status', value: 'Active', inline: true }
+            )
+            .setFooter({ text: 'Anyone currently in this channel can use the controls.' })
+            .setTimestamp();
+
+        // Edit the message with the new embed
+        await message.edit({ embeds: [updatedEmbed] });
+
+    } catch (error) {
+        console.error(`Error refreshing control panel for ${channel.id}:`, error);
+    }
+}
+
 // Event: Client is ready
 client.once('ready', async () => {
     // Log successful login
@@ -267,18 +315,12 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             const guild = newState.guild;
 
             // Create a new temporary voice channel
+            // We do not provide permissionOverwrites here to allow the channel
+            // to inherit permissions from the parent category as requested.
             const voiceChannel = await guild.channels.create({
                 name: `${member.displayName}'s Room`,
                 type: ChannelType.GuildVoice,
-                parent: CATEGORY_ID,
-                permissionOverwrites: [
-                    {
-                        // Set the creator as the owner.
-                        // We do NOT give ManageChannels to enforce the middleware approach via buttons.
-                        id: member.id,
-                        allow: [PermissionFlagsBits.Connect, PermissionFlagsBits.ViewChannel]
-                    }
-                ]
+                parent: CATEGORY_ID
             });
 
             // Move the user into their new channel
@@ -294,8 +336,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                     { name: 'Channel', value: `${voiceChannel.name}`, inline: true }
                 );
 
-            // Create buttons for Edit Name, Lock/Unlock, and Set User Limit
-            const buttons = new ActionRowBuilder()
+            // Create first row of buttons: Edit Name and Set User Limit
+            const row1 = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
                         .setCustomId('manage_name')
@@ -304,17 +346,26 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                     new ButtonBuilder()
                         .setCustomId('manage_limit')
                         .setLabel('Set Limit')
-                        .setStyle(ButtonStyle.Primary),
+                        .setStyle(ButtonStyle.Primary)
+                );
+
+            // Create second row of buttons: Lock/Unlock (Join) and Hide/Show (Visibility)
+            const row2 = new ActionRowBuilder()
+                .addComponents(
                     new ButtonBuilder()
                         .setCustomId('manage_privacy')
                         .setLabel('Lock/Unlock')
+                        .setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('manage_visibility')
+                        .setLabel('Hide/Show')
                         .setStyle(ButtonStyle.Secondary)
                 );
 
             // Send the control panel to the voice channel's built-in text chat
             const controlMessage = await voiceChannel.send({
                 embeds: [controlEmbed],
-                components: [buttons]
+                components: [row1, row2]
             });
 
             // Pin the control panel message for easy access
@@ -386,10 +437,14 @@ client.on('interactionCreate', async (interaction) => {
         // Check if the interaction is happening in a managed channel
         if (!record) return;
 
-        // Verify if the interacting user is the owner of the channel
-        if (interaction.user.id !== record.owner_id) {
+        // Fetch the voice channel and check if the user is currently in it
+        const channel = interaction.channel;
+        const member = channel.members.get(interaction.user.id);
+
+        // Authorization: Only allow users currently in the voice channel to use the controls
+        if (!member) {
             return interaction.reply({
-                content: 'You do not own this voice channel.',
+                content: 'You must be in the voice channel to use the controls.',
                 ephemeral: true
             });
         }
@@ -434,17 +489,50 @@ client.on('interactionCreate', async (interaction) => {
                     await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
                         Connect: null
                     });
-                    await interaction.reply({ content: 'Channel is now public.', ephemeral: true });
+                    await interaction.reply({ content: `🔓 ${interaction.member.displayName} unlocked the channel (anyone can join).` });
                 } else {
                     // Lock: Set Connect to false
                     await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
                         Connect: false
                     });
-                    await interaction.reply({ content: 'Channel is now locked.', ephemeral: true });
+                    await interaction.reply({ content: `🔒 ${interaction.member.displayName} locked the channel (joining restricted).` });
                 }
+                // Refresh the control panel embed to reflect changes
+                await refreshControlPanel(channel);
             } catch (error) {
                 console.error('Error toggling privacy:', error);
                 await interaction.reply({ content: 'Failed to update privacy.', ephemeral: true });
+            }
+        }
+
+        // Handle "Hide/Show" button click (Visibility Toggle)
+        if (customId === 'manage_visibility') {
+            try {
+                const channel = interaction.channel;
+                // Get current permission for @everyone role
+                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+
+                // Toggle between Hidden (ViewChannel: false) and Visible (ViewChannel: null/inherit)
+                const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+
+                if (isHidden) {
+                    // Show: Remove ViewChannel denial
+                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                        ViewChannel: null
+                    });
+                    await interaction.reply({ content: `👁️ ${interaction.member.displayName} made the channel visible to everyone.` });
+                } else {
+                    // Hide: Set ViewChannel to false
+                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                        ViewChannel: false
+                    });
+                    await interaction.reply({ content: `👻 ${interaction.member.displayName} hid the channel from the channel list.` });
+                }
+                // Refresh the control panel embed to reflect changes
+                await refreshControlPanel(channel);
+            } catch (error) {
+                console.error('Error toggling visibility:', error);
+                await interaction.reply({ content: 'Failed to update visibility.', ephemeral: true });
             }
         }
 
@@ -474,17 +562,28 @@ client.on('interactionCreate', async (interaction) => {
 
     // Handle Modal Submissions
     if (interaction.type === InteractionType.ModalSubmit) {
+        // Authorization: Only allow users currently in the voice channel to submit modals
+        const channel = interaction.channel;
+        if (!channel.members.has(interaction.user.id)) {
+            return interaction.reply({
+                content: 'You must be in the voice channel to manage it.',
+                ephemeral: true
+            });
+        }
+
         if (interaction.customId === 'modal_name_change') {
             // Immediately defer the reply to prevent interaction timeout
             // especially since setName() is subject to strict rate limits
-            await interaction.deferReply({ ephemeral: true });
+            await interaction.deferReply();
 
             const newName = interaction.fields.getTextInputValue('new_name');
             try {
                 // Update the channel name in Discord
                 await interaction.channel.setName(newName);
                 // Edit the deferred reply
-                await interaction.editReply({ content: `Channel name updated to: ${newName}` });
+                await interaction.editReply({ content: `📝 ${interaction.member.displayName} renamed the channel to: **${newName}**` });
+                // Refresh the control panel embed to reflect changes
+                await refreshControlPanel(interaction.channel);
             } catch (error) {
                 console.error('Error updating channel name:', error);
                 // Provide specific feedback for rate limits (common with setName)
@@ -508,7 +607,10 @@ client.on('interactionCreate', async (interaction) => {
             try {
                 // Update the voice channel's user limit
                 await interaction.channel.setUserLimit(limit);
-                await interaction.editReply({ content: `User limit set to ${limit === 0 ? 'unlimited' : limit}.` });
+                const limitText = limit === 0 ? 'unlimited' : `${limit} users`;
+                await interaction.editReply({ content: `👥 ${interaction.member.displayName} set the user limit to: **${limitText}**` });
+                // Refresh the control panel embed to reflect changes
+                await refreshControlPanel(interaction.channel);
             } catch (error) {
                 console.error('Error setting user limit:', error);
                 const errorMsg = error.code === 50013 ? 'Missing permissions to set user limit.' : 'Failed to set user limit.';
