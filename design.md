@@ -18,8 +18,8 @@ Table: `users`
 
 ## Logic Overview
 - **Creation**: Triggered when joining `HUB_CHANNEL_ID`. Creates a voice channel and pins a control message in its built-in text chat.
-- **Interactions**: Owner can edit name, toggle privacy, and set user limits via buttons/menus.
-- **Cleanup**: Triggered when the voice channel becomes empty. Deletes channel and DB row.
+- **Interactions**: Owner can edit name, toggle privacy, and set user limits via buttons and modals.
+- **Cleanup**: Triggered when a managed voice channel stays empty for `EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES`.
 - **Recovery**: On boot, checks for abandoned channels in the database and cleans them up.
 - **Gamification**:
     - Every 60 seconds, awards XP to users in managed or static voice channels.

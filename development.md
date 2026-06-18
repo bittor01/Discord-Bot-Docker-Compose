@@ -15,3 +15,7 @@
 - Added configurable scaling, state multipliers, and static channel monitoring.
 - Implemented throttled level-up notifications with percentile-based medals.
 - Updated documentation and `.env.example`.
+- Switched "Set User Limit" to button+modal UI.
+- Implemented configurable delayed channel cleanup.
+- Enhanced interaction resilience with `deferReply` and better error handling.
+- Improved recovery logic to scan category and respect cleanup delay.

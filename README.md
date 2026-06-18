@@ -6,7 +6,7 @@ HubBot is a Discord bot that manages temporary voice channels. When a user joins
 
 - **Automatic Channel Creation**: Users join a Hub channel to get their own temporary room.
 - **Control Panel**: Manage channel name, privacy (lock/unlock), and user limits via an easy-to-use embed.
-- **Auto-Cleanup**: Channels are automatically deleted when they become empty.
+- **Auto-Cleanup**: Channels are deleted when they become empty (supports configurable delay).
 - **Gamification**: Earn XP and level up by spending time in voice channels. Includes custom scaling, AFK detection, and medal ranks.
 - **Persistence**: Remembers active channels and user levels across restarts using SQLite.
 - **Dockerized**: Easy deployment with Docker Compose.
@@ -25,13 +25,15 @@ Create an application on the [Discord Developer Portal](https://discord.com/deve
 - **NOTE**: This bot does **NOT** require the *Message Content* intent.
 
 #### Bot Permissions
-The bot follows the principle of least privilege. It only needs permissions to manage the channels it creates and static channels you specify:
-- **Manage Channels**: To create/delete rooms and toggle privacy (Lock/Unlock) via channel overwrites.
+The bot follows the principle of least privilege. It only needs permissions to manage the channels it creates and static channels you specify. **Important:** These permissions should be granted at the **Category** level so they sync to new channels.
+
+- **Manage Channels**: To create/delete rooms and toggle privacy (Lock/Unlock).
 - **Move Members**: To move users from the Hub to their new room.
 - **View Channel**: To see the Hub, Category, and static channels.
 - **Send Messages**: To post the control panel and level-up embeds.
 - **Embed Links**: To format embeds.
 - **Pin Messages**: Required to **Pin** the control panel message.
+- **Read Message History**: Often required for the bot to successfully pin messages.
 
 ### 2. Gamification System
 HubBot awards XP every minute to users in managed voice channels and configured static channels.
@@ -45,6 +47,7 @@ Copy `.env.example` to `.env` and fill in your details:
 - `DISCORD_TOKEN`: Your bot token.
 - `HUB_CHANNEL_ID`: The ID of the voice channel users join to create a room.
 - `CATEGORY_ID`: The ID of the category where new rooms will be created.
+- `EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES`: (Optional) How long to wait before deleting an empty room.
 
 ### 3. Deployment
 ```bash
