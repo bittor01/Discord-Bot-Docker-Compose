@@ -3,6 +3,10 @@
  */
 
 const { createCanvas, registerFont, loadImage } = require('canvas');
+const path = require('path');
+
+// Register FontAwesome for icons in the status charms
+registerFont(path.join(__dirname, 'node_modules/@fortawesome/fontawesome-free/webfonts/fa-solid-900.ttf'), { family: 'FontAwesome' });
 
 /**
  * Renders the control panel image showing members, their acclimation bars, and multipliers.
@@ -75,34 +79,45 @@ async function renderControlPanelImage(members) {
         const charmSpacing = 8; // More spacing between charms
 
         (m.buffs || []).forEach(buff => {
-            // Determine charm color and symbol based on type
-            let color = '#43b581'; // Default green (buff)
-            let symbol = '';
+            // Use more vibrant colors ("pop") for the charms.
+            let color = '#2ecc71'; // Vibrant Green (buff)
+            let icon = ''; // Symbol from FontAwesome
 
-            if (buff.type === 'debuff') color = '#ff4742'; // Red (debuff)
-            if (buff.type === 'neutral') color = '#b9bbbe'; // Gray (neutral)
+            if (buff.type === 'debuff') color = '#e74c3c'; // Vibrant Red (debuff)
+            if (buff.type === 'neutral') color = '#95a5a6'; // Clear Gray (neutral)
 
-            // Define symbols for each buff ID
-            // 'A' for Acclimation replaces 'R' (Ramp) for better clarity
+            // Define symbols for each buff ID using FontAwesome unicode icons.
             switch (buff.id) {
-                case 'group': symbol = 'G'; break;
-                case 'sharing': symbol = 'S'; color = '#ff73fa'; break; // Screenshare purple
-                case 'acclimation': symbol = 'A'; break;
-                case 'mute': symbol = 'M'; break;
-                case 'deaf': symbol = 'D'; break;
+                case 'group':
+                    icon = '\uf0c0'; // 'users' icon
+                    break;
+                case 'sharing':
+                    icon = '\uf108'; // 'desktop' icon
+                    color = '#9b59b6'; // Vibrant Purple
+                    break;
+                case 'acclimation':
+                    icon = '\uf017'; // 'clock' icon
+                    break;
+                case 'mute':
+                    icon = '\uf131'; // 'microphone-slash' icon
+                    break;
+                case 'deaf':
+                    icon = '\uf6a9'; // 'volume-xmark' icon
+                    break;
             }
 
-            // Draw charm circle
+            // Draw vibrant charm circle
             ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(charmX + charmSize / 2, charmY + charmSize / 2, charmSize / 2, 0, Math.PI * 2);
             ctx.fill();
 
-            // Draw charm symbol text
+            // Draw white FontAwesome icon centered in the circle
             ctx.fillStyle = '#ffffff';
-            ctx.font = `bold 12px ${fontStack}`; // Larger symbol text
+            // Use FontAwesome family for the icon
+            ctx.font = `12px "FontAwesome"`;
             ctx.textAlign = 'center';
-            ctx.fillText(symbol, charmX + charmSize / 2, charmY + charmSize / 2 + 5);
+            ctx.fillText(icon, charmX + charmSize / 2, charmY + charmSize / 2 + 5);
             ctx.textAlign = 'left';
 
             charmX += charmSize + charmSpacing;
