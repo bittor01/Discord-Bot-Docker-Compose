@@ -163,7 +163,7 @@ client.once('ready', async () => {
                 }
             }
 
-            achievementManager.checkResets();
+            await achievementManager.checkResets(client, runRenderTask, limiter);
 
             const now = Date.now();
             const cleanupDelayMs = (parseInt(process.env.EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES) || 0) * 60 * 1000;
