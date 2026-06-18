@@ -37,6 +37,18 @@ db.exec(`
     )
 `);
 
+// Migration: Add missing columns if they don't exist
+// This handles cases where the table was created before the new columns were added
+const tableInfo = db.prepare('PRAGMA table_info(users)').all();
+const columns = tableInfo.map(c => c.name);
+
+if (!columns.includes('weekly_xp')) db.exec('ALTER TABLE users ADD COLUMN weekly_xp REAL DEFAULT 0');
+if (!columns.includes('monthly_xp')) db.exec('ALTER TABLE users ADD COLUMN monthly_xp REAL DEFAULT 0');
+if (!columns.includes('weekly_level')) db.exec('ALTER TABLE users ADD COLUMN weekly_level INTEGER DEFAULT 0');
+if (!columns.includes('monthly_level')) db.exec('ALTER TABLE users ADD COLUMN monthly_level INTEGER DEFAULT 0');
+if (!columns.includes('last_reset_weekly')) db.exec('ALTER TABLE users ADD COLUMN last_reset_weekly INTEGER DEFAULT 0');
+if (!columns.includes('last_reset_monthly')) db.exec('ALTER TABLE users ADD COLUMN last_reset_monthly INTEGER DEFAULT 0');
+
 db.exec(`
     CREATE TABLE IF NOT EXISTS achievements (
         achievement_id TEXT PRIMARY KEY,
@@ -68,6 +80,13 @@ db.exec(`
         session_start_timestamp INTEGER
     )
 `);
+
+// Migration: Add session_start_timestamp to session_state if missing
+const sessionTableInfo = db.prepare('PRAGMA table_info(session_state)').all();
+const sessionColumns = sessionTableInfo.map(c => c.name);
+if (!sessionColumns.includes('session_start_timestamp')) {
+    db.exec('ALTER TABLE session_state ADD COLUMN session_start_timestamp INTEGER');
+}
 
 module.exports = {
     getUser: (userId) => {
