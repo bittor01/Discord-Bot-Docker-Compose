@@ -16,15 +16,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('leaderboard')
-        .setDescription('Show the XP leaderboard.')
-        .addStringOption(option =>
-            option.setName('period')
-                .setDescription('The time period')
-                .addChoices(
-                    { name: 'Weekly', value: 'weekly' },
-                    { name: 'Monthly', value: 'monthly' },
-                    { name: 'Lifetime', value: 'lifetime' }
-                )),
+        .setDescription('Show the XP leaderboard for this channel.'),
 
     new SlashCommandBuilder()
         .setName('givexp')
@@ -107,15 +99,28 @@ async function handleInteraction(interaction, runRenderTask) {
     }
 
     if (commandName === 'leaderboard') {
-        const period = interaction.options.getString('period') || 'lifetime';
-        const top = db.getLeaderboard(period, 10);
+        const channelId = interaction.channelId;
+        let period = null;
 
+        // Determine period based on channel ID
+        if (channelId === process.env.WEEKLY_LEADERBOARD_CHANNEL_ID) period = 'weekly';
+        else if (channelId === process.env.MONTHLY_LEADERBOARD_CHANNEL_ID) period = 'monthly';
+        else if (channelId === process.env.LIFETIME_LEADERBOARD_CHANNEL_ID) period = 'lifetime';
+
+        if (!period) {
+            return interaction.reply({
+                content: 'This command can only be used in designated leaderboard channels.',
+                ephemeral: true
+            });
+        }
+
+        const top = db.getLeaderboard(period, 10);
         let description = top.map((entry, i) => `${i+1}. <@${entry.user_id}> - Level ${entry.level} (${Math.floor(entry.xp).toLocaleString()} XP)`).join('\n');
 
         const embed = new EmbedBuilder()
             .setTitle(`${period.charAt(0).toUpperCase() + period.slice(1)} Leaderboard`)
             .setDescription(description || 'No entries yet.')
-            .setColor(0xFFD700);
+            .setColor(period === 'weekly' ? 0x7289da : (period === 'monthly' ? 0xff73fa : 0xFFD700));
 
         await interaction.reply({ embeds: [embed] });
     }
