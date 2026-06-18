@@ -1,6 +1,6 @@
 /**
  * rateLimiter.js
- * Implements a Leaky Bucket rate limiter for Discord API calls.
+ * Implements a Leaky Bucket rate limiter for Discord API calls with retry logic.
  */
 
 class RateLimiter {
@@ -24,14 +24,20 @@ class RateLimiter {
 
     async processQueue() {
         while (this.queue.length > 0 && this.tokens >= 1) {
-            const { resolve, task } = this.queue.shift();
+            const { resolve, reject, task, attempts } = this.queue.shift();
             this.tokens -= 1;
             try {
                 const result = await task();
                 resolve(result);
             } catch (error) {
-                // Task failed, but we still consumed a token for the attempt
-                resolve(Promise.reject(error));
+                // If it's a timeout error and we haven't exhausted retries, put it back in queue
+                if (error.code === 'UND_ERR_CONNECT_TIMEOUT' && attempts < 3) {
+                    console.warn(`API call timed out, retrying (attempt ${attempts + 1})...`);
+                    this.queue.push({ resolve, reject, task, attempts: attempts + 1 });
+                } else {
+                    // Task failed, but we still consumed a token for the attempt
+                    reject(error);
+                }
             }
         }
     }
@@ -41,8 +47,8 @@ class RateLimiter {
      * @param {Function} task A function that returns a Promise
      */
     async execute(task) {
-        return new Promise((resolve) => {
-            this.queue.push({ resolve, task });
+        return new Promise((resolve, reject) => {
+            this.queue.push({ resolve, reject, task, attempts: 0 });
             this.processQueue();
         });
     }

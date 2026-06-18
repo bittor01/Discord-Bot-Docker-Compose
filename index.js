@@ -89,7 +89,11 @@ async function refreshControlPanel(channel) {
         // 3. Calculate real-time XP multipliers for each member to display in the UI.
         const renderedMembers = [];
         for (const mData of membersData) {
-            const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter);
+            // Optimization: Since we already have the 'channel' object with its 'members' cache,
+            // we pass the GuildMember object directly to avoid redundant API calls.
+            const guildMember = channel.members.get(mData.userId);
+            const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
+
             renderedMembers.push({
                 name: mData.name,
                 acclimation: mData.acclimation,

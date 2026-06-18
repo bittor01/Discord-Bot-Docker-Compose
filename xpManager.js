@@ -76,8 +76,14 @@ function persistSession(userId, session) {
 /**
  * Calculates the total XP multiplier for a user based on their acclimation,
  * grouping bonus, and voice state (mute/deaf/screenshare).
+ *
+ * @param {Client} client Discord Client
+ * @param {string} userId The ID of the user
+ * @param {Array} channelMembers List of member data objects in the same channel
+ * @param {RateLimiter} limiter The rate limiter for API calls
+ * @param {GuildMember} [guildMemberOverride] Optional pre-fetched GuildMember object to avoid API calls
  */
-async function calculateMultiplier(client, userId, channelMembers, limiter) {
+async function calculateMultiplier(client, userId, channelMembers, limiter, guildMemberOverride = null) {
     // 1. Find the current user's session data from the provided member list
     const member = channelMembers.find(m => m.userId === userId);
     // If not found, they get no XP
@@ -103,7 +109,10 @@ async function calculateMultiplier(client, userId, channelMembers, limiter) {
 
     // 5. Apply Voice State Modifiers (Mute/Deaf)
     let individualMult = 1.0;
-    const guildMember = await fetchGuildMember(client, member.channelId || member.channel_id, userId, limiter);
+
+    // Use the override if provided, otherwise fetch from Discord (expensive)
+    const guildMember = guildMemberOverride || await fetchGuildMember(client, member.channelId || member.channel_id, userId, limiter);
+
     if (guildMember) {
         if (guildMember.voice.deaf || guildMember.voice.selfDeaf) {
             // Deafened users get a significant penalty (e.g., 0.1x)
@@ -171,9 +180,15 @@ async function tick(client, limiter) {
 
     // Award XP to every active member
     for (const [channelId, members] of channelGroups) {
+        // Optimization: Fetch the channel and its members once per group
+        const channel = await limiter.execute(() => client.channels.fetch(channelId).catch(() => null));
+
         for (const member of members) {
-            // Calculate real-time multiplier using the extracted function
-            const totalMultiplier = await calculateMultiplier(client, member.userId, members, limiter);
+            // Optimization: Get the GuildMember object from the already-fetched channel cache
+            const guildMember = channel?.members.get(member.userId);
+
+            // Calculate real-time multiplier using the extracted function (passing the pre-fetched member)
+            const totalMultiplier = await calculateMultiplier(client, member.userId, members, limiter, guildMember);
 
             // Calculate XP gain (Base * Time * Multiplier)
             const xpGain = XP_PER_SECOND * (TICK_INTERVAL_MS / 1000) * totalMultiplier;
