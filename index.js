@@ -108,13 +108,29 @@ async function refreshControlPanel(channel) {
             const xpForNextLevel = xpManager.getXPForLevel(displayLevel + 1);
             const progress = (currentXP - xpForCurrentLevel) / (xpForNextLevel - xpForCurrentLevel);
 
+            // Calculate "Time to Level" (TTL)
+            // XP_PER_SECOND is the base rate. We multiply by our real-time total multiplier.
+            const xpPerSec = parseFloat(process.env.XP_PER_SECOND) || 1;
+            const xpRemaining = xpForNextLevel - currentXP;
+            let eta = 'N/A';
+            if (mult > 0) {
+                const secondsRemaining = xpRemaining / (xpPerSec * mult);
+                const minutesRemaining = Math.ceil(secondsRemaining / 60);
+                if (minutesRemaining >= 60) {
+                    const hours = Math.floor(minutesRemaining / 60);
+                    const mins = minutesRemaining % 60;
+                    eta = `${hours}h ${mins}m`;
+                } else {
+                    eta = `${minutesRemaining}m`;
+                }
+            }
+
             renderedMembers.push({
                 name: mData.name,
                 progress: Math.min(1.0, Math.max(0, progress)),
                 isSharing: mData.isSharing,
-                multiplier: mult,
-                level: displayLevel,
-                estimatedMinutes: xpManager.estimateTimeToNextLevel(currentXP, mult, displayLevel)
+                eta,
+                level: displayLevel
             });
         }
 
@@ -276,28 +292,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     if (newState.channelId === HUB_CHANNEL_ID && oldState.channelId !== HUB_CHANNEL_ID) {
         try {
             const member = newState.member;
-            const guild = newState.guild;
-            // Create a new private voice channel for the member
-            const voiceChannel = await limiter.execute(() => guild.channels.create({
+            const voiceChannel = await limiter.execute(() => newState.guild.channels.create({
                 name: `${member.displayName}'s Room`,
                 type: ChannelType.GuildVoice,
                 parent: CATEGORY_ID
             }));
-            // Set default permissions: @everyone cannot connect or view
-            await limiter.execute(() =>
-                voiceChannel.permissionOverwrites.edit(guild.roles.everyone, {
-                    Connect: false,
-                    ViewChannel: false
-                })
-            );
-            // Grant the channel owner full access
-            await limiter.execute(() =>
-                voiceChannel.permissionOverwrites.edit(member.id, {
-                    Connect: true,
-                    ViewChannel: true
-                })
-            );
-            // Move the member into the newly created channel
             await limiter.execute(() => member.voice.setChannel(voiceChannel));
             const controlEmbed = new EmbedBuilder().setTitle('Voice Channel Control Panel').setDescription('Manage your channel below.').setColor(0x00AE86);
             const row1 = new ActionRowBuilder().addComponents(
@@ -351,21 +350,9 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.showModal(modal);
         }
         if (customId === 'manage_privacy') {
-            // Verify bot can manage permissions
-            const botPerms = channel.permissionsFor(client.user);
-            if (!botPerms || !botPerms.has(PermissionFlagsBits.ManageRoles)) {
-                await interaction.reply({
-                    content: '❌ I lack permission to manage channel permissions. Please adjust my role.',
-                    ephemeral: true
-                });
-                return;
-            }
             const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
             const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-            // Toggle lock: remove deny if locked, otherwise deny Connect
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-                Connect: isLocked ? null : false
-            }));
+            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
             await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
             await refreshControlPanel(channel);
         }

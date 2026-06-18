@@ -74,19 +74,11 @@ async function renderControlPanelImage(members) {
             ctx.fill();
         }
 
-        // Draw Multiplier or Estimated Time Text
+        // Draw ETA Text
         ctx.fillStyle = '#b9bbbe';
         ctx.font = `bold 14px ${fontStack}`;
-        const displayMode = (process.env.XP_DISPLAY_MODE || 'multiplier').toLowerCase();
-        let displayText;
-        if (displayMode === 'time' && typeof m.estimatedMinutes === 'number') {
-            // Show estimated minutes rounded up with "min" suffix
-            displayText = `${m.estimatedMinutes}min`;
-        } else {
-            // Default to multiplier display
-            displayText = `${(m.multiplier || 0).toFixed(2)}x`;
-        }
-        ctx.fillText(displayText, barX + barWidth + 20, y);
+        // Align ETA text clearly at the end of the bar
+        ctx.fillText(m.eta || 'N/A', barX + barWidth + 20, y);
 
         // Draw "LIVE" tag if screensharing
         // Replaces the "📺" emoji which often fails to render (showing squares) on Linux servers

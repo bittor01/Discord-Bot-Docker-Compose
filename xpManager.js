@@ -248,30 +248,6 @@ function getXPForLevel(level) {
     return total;
 }
 
-/* Existing code unchanged up to line 262 */
-/**
- * Estimates the time (in minutes) until the user reaches the next level.
- * Uses current XP, target XP for next level, and the current XP gain rate.
- * The calculation includes the current multiplier to reflect realistic gain.
- * Returns a whole number of minutes, rounded up.
- *
- * @param {number} currentXP - Current XP of the user.
- * @param {number} multiplier - Current XP multiplier (e.g., 1.5).
- * @param {number} level - Current level of the user.
- * @returns {number} Minutes until next level (rounded up).
- */
-function estimateTimeToNextLevel(currentXP, multiplier, level) {
-    // Calculate XP required for the next level.
-    const xpForNext = getXPForLevel(level + 1);
-    const remainingXP = Math.max(0, xpForNext - currentXP);
-    // XP per second considering the multiplier.
-    const xpPerSec = (XP_PER_SECOND || 1) * (multiplier || 1);
-    if (xpPerSec <= 0) return Infinity;
-    // Convert seconds to minutes and round up.
-    const minutes = Math.ceil((remainingXP / xpPerSec) / 60);
-    return minutes;
-}
-
 module.exports = {
     init,
     updateUserPresence,
@@ -281,7 +257,5 @@ module.exports = {
     getLevelFromXP,
     getXPForLevel,
     awardXP,
-    userSessions,
-    // Export helper for external use.
-    estimateTimeToNextLevel
+    userSessions
 };

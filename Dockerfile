@@ -17,9 +17,7 @@ RUN apk add --no-cache \
     ttf-dejavu \
     font-noto \
     font-noto-cjk \
-    font-noto-emoji \
-    sqlite-dev \
-    musl-dev
+    font-noto-emoji
 
 # Set working directory
 WORKDIR /usr/src/app
@@ -27,8 +25,9 @@ WORKDIR /usr/src/app
 # Copy package manifest files
 COPY package*.json ./
 
-# Install all dependencies (including dev) needed for native builds
-RUN npm ci --unsafe-perm
+# Install production dependencies only
+# Using --omit=dev as --only=production is deprecated in newer npm versions
+RUN npm ci --omit=dev
 
 # Copy the rest of the application code
 COPY . .
@@ -37,8 +36,8 @@ COPY . .
 RUN mkdir -p /usr/src/app/data
 
 # Environment variables
-ENV DATABASE_PATH=/usr/src/app/data/state.db
 ENV NODE_ENV=production
+ENV DATABASE_PATH=/usr/src/app/data/state.db
 
 # Define volume for database persistence
 VOLUME [ "/usr/src/app/data" ]
