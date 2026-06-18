@@ -4,6 +4,7 @@
  */
 
 const db = require('./database');
+const { PermissionFlagsBits } = require('discord.js');
 
 const ACCLIMATION_TIME_MS = (parseInt(process.env.ACCLIMATION_TIME_MINUTES) || 15) * 60 * 1000;
 const GRACE_PERIOD_MS = (parseFloat(process.env.ACCLIMATION_GRACE_PERIOD_MINUTES) || 7.5) * 60 * 1000;
@@ -144,6 +145,26 @@ async function tick(client, limiter) {
 
             // If they've been gone past the grace period, wipe the session
             if (awayTime > gracePeriodHold + gracePeriodDecay) {
+                // If the channel was Locked or Private, we need to remove their permission overwrite
+                // to prevent them from re-joining now that their session/acclimation has expired.
+                const channel = await limiter.execute(() => client.channels.fetch(session.channelId).catch(() => null));
+                if (channel) {
+                    // Find the user's specific overwrite in this channel.
+                    const overwrite = channel.permissionOverwrites.cache.get(userId);
+                    if (overwrite) {
+                        // We only remove it if the channel is currently Locked (Connect denied for @everyone).
+                        // This enforces the rule that they lose their "spot" if they stay away too long.
+                        const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
+                        const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+
+                        if (isLocked) {
+                            // Delete the overwrite to revoke their explicit Connect/ViewChannel permissions.
+                            await limiter.execute(() => overwrite.delete());
+                        }
+                    }
+                }
+
+                // Remove from memory and database.
                 userSessions.delete(userId);
                 db.clearSession(userId);
                 continue;
