@@ -29,20 +29,20 @@ async function renderControlPanelImage(members) {
     members.forEach((m, i) => {
         const y = padding + 20 + i * rowHeight;
 
-        // Draw Level
+        // Draw Level Number
         ctx.fillStyle = '#faa61a'; // Gold/Yellow for levels
         ctx.font = `bold 14px ${fontStack}`;
-        const levelText = `L${m.level}`;
+        const levelText = `${m.level}`;
         ctx.fillText(levelText, padding, y);
 
         // Draw Member Name
         ctx.fillStyle = '#ffffff';
         ctx.font = `bold 16px ${fontStack}`;
-        const nameText = m.name.length > 16 ? m.name.substring(0, 14) + '...' : m.name;
-        ctx.fillText(nameText, padding + 60, y);
+        const nameText = m.name.length > 18 ? m.name.substring(0, 16) + '...' : m.name;
+        ctx.fillText(nameText, padding + 35, y);
 
         // Define Bar Dimensions
-        const barX = padding + 220;
+        const barX = padding + 190;
         const barY = y - 20;
         const barWidth = 300;
         const barHeight = 24; // Taller bar for a "solid" feel
@@ -53,22 +53,21 @@ async function renderControlPanelImage(members) {
         ctx.roundRect(barX, barY, barWidth, barHeight, 4); // Rounded corners for modern look
         ctx.fill();
 
-        // Draw XP Fill (Red -> Yellow -> Green based on acclimation)
-        if (m.acclimation > 0) {
+        // Draw XP Fill (Red -> Yellow -> Green based on progress)
+        if (m.progress > 0) {
             let fillColor;
-            if (m.acclimation < 0.35) {
-                fillColor = '#ff4742'; // Red for low acclimation
-            } else if (m.acclimation < 0.75) {
+            if (m.progress < 0.35) {
+                fillColor = '#ff4742'; // Red for low progress
+            } else if (m.progress < 0.75) {
                 fillColor = '#faa61a'; // Yellow/Orange for mid-range
             } else {
-                fillColor = '#43b581'; // Green for high acclimation
+                fillColor = '#43b581'; // Green for high progress
             }
 
             ctx.fillStyle = fillColor;
             ctx.beginPath();
             // Ensure the fill also has rounded corners.
-            // Math.max(barHeight, ...) ensures even tiny fills look decent.
-            const fillWidth = Math.max(8, barWidth * m.acclimation);
+            const fillWidth = Math.max(8, barWidth * m.progress);
             ctx.roundRect(barX, barY, fillWidth, barHeight, 4);
             ctx.fill();
         }

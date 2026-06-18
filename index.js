@@ -95,16 +95,22 @@ async function refreshControlPanel(channel) {
             const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
 
             // Fetch the user's levels from the database.
-            const user = db.getUser(mData.userId);
+            const user = db.getUser(mData.userId) || { level: 0, weekly_level: 0, monthly_level: 0, xp: 0, weekly_xp: 0, monthly_xp: 0 };
 
             // Logic for "shortest term level": Weekly > Monthly > Lifetime.
             // If weekly level is enabled (non-zero), use it. Otherwise try monthly, then lifetime.
-            const displayLevel = user.weekly_level > 0 ? user.weekly_level :
-                               (user.monthly_level > 0 ? user.monthly_level : user.level);
+            const p = user.weekly_level > 0 ? 'weekly' : (user.monthly_level > 0 ? 'monthly' : 'lifetime');
+            const displayLevel = p === 'weekly' ? user.weekly_level : (p === 'monthly' ? user.monthly_level : user.level);
+            const currentXP = p === 'weekly' ? user.weekly_xp : (p === 'monthly' ? user.monthly_xp : user.xp);
+
+            // Calculate progress to next level
+            const xpForCurrentLevel = xpManager.getXPForLevel(displayLevel);
+            const xpForNextLevel = xpManager.getXPForLevel(displayLevel + 1);
+            const progress = (currentXP - xpForCurrentLevel) / (xpForNextLevel - xpForCurrentLevel);
 
             renderedMembers.push({
                 name: mData.name,
-                acclimation: mData.acclimation,
+                progress: Math.min(1.0, Math.max(0, progress)),
                 isSharing: mData.isSharing,
                 multiplier: mult,
                 level: displayLevel

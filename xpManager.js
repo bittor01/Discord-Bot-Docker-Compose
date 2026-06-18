@@ -104,13 +104,8 @@ async function calculateMultiplier(client, userId, channelMembers, limiter, guil
     }
 
     // 4. Combine with user's own acclimation
-    // We want the group bonus to apply fully even at low acclimation,
-    // but the user's BASE gain still scales with their own acclimation.
-    const baseGroupMult = 1.0 + groupSum;
-    // New logic: (0.1 base + 0.9 * acclimation) ensures even newcomers get *some* XP
-    // and feel the effect of the group multiplier immediately.
-    const acclimationFactor = 0.1 + (0.9 * member.acclimation);
-    const finalGroupMult = acclimationFactor * baseGroupMult;
+    // Users start at 100% (1.0x) and gain more based on the group's acclimation.
+    const finalGroupMult = 1.0 + groupSum;
 
     // 5. Apply Voice State Modifiers (Mute/Deaf)
     let individualMult = 1.0;
