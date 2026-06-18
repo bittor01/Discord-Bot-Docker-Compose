@@ -132,7 +132,7 @@ async function refreshControlPanel(channel) {
             .setTitle('Voice Channel Control Panel')
             .setColor(isLocked ? 0xff4742 : 0x00AE86)
             .addFields(
-                { name: 'Privacy', value: isLocked ? '🔒 Locked' : '🔓 Public', inline: true },
+                { name: 'Locking', value: isLocked ? '🔒 Locked' : '🔓 Unlocked', inline: true },
                 { name: 'Visibility', value: isPrivate ? '👻 Private' : '👁️ Public', inline: true }
             )
             .setImage('attachment://status.png')
@@ -307,17 +307,16 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             // and other administrative roles have the correct access.
             await limiter.execute(() => voiceChannel.lockPermissions());
 
-            // Apply initial permission overrides to put the room in its starting 'Private' and 'Locked' state.
+            // Apply initial permission overrides to put the room in its starting 'Private' but 'Unlocked' state.
             // We do this AFTER creation and syncing to avoid breaking the inheritance chain for the bot.
             await limiter.execute(() => voiceChannel.permissionOverwrites.edit(newState.guild.roles.everyone, {
-                ViewChannel: false,
-                Connect: false
+                ViewChannel: false, // Start as Private (Hidden from others).
+                Connect: null      // Start as Unlocked (Anyone who can see it can join).
             }));
 
-            // Explicitly allow the creator to see and join their own room.
+            // Explicitly allow the creator to see the room since we just hid it from @everyone.
             await limiter.execute(() => voiceChannel.permissionOverwrites.edit(member.id, {
-                ViewChannel: true,
-                Connect: true
+                ViewChannel: true
             }));
             // Move the creator into their newly created voice channel.
             await limiter.execute(() => member.voice.setChannel(voiceChannel));
@@ -334,9 +333,9 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             );
 
             // Row 2: Privacy and Visibility toggles.
-            // Since rooms start Locked and Private (Hidden), we show the labels for the opposite states.
+            // Rooms start Unlocked and Private. We show 'Lock' and 'Public' as the available actions.
             const row2 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Unlock').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock').setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder().setCustomId('manage_visibility').setLabel('Public').setStyle(ButtonStyle.Secondary)
             );
             const controlMessage = await limiter.execute(() => voiceChannel.send({ embeds: [controlEmbed], components: [row1, row2] }));
@@ -446,52 +445,48 @@ client.on('interactionCreate', async (interaction) => {
 
             if (!isPrivate) {
                 // ACTION: MAKE PRIVATE
-                // 1. Snapshot all current members and grant them explicit ViewChannel and Connect permissions.
+                // 1. Snapshot all current members and grant them explicit ViewChannel permission.
                 const members = Array.from(channel.members.values());
                 for (const m of members) {
                     await limiter.execute(() => channel.permissionOverwrites.edit(m.id, {
-                        ViewChannel: true,
-                        Connect: true
+                        ViewChannel: true
                     }));
                 }
 
-                // 2. Deny ViewChannel and Connect for @everyone.
+                // 2. Deny ViewChannel for @everyone.
                 await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-                    ViewChannel: false,
-                    Connect: false
+                    ViewChannel: false
                 }));
 
                 await interaction.reply({
-                    content: `👻 **${interaction.member.displayName}** made the channel private. Only current members can see it.`
+                    content: `👻 **${interaction.member.displayName}** made the channel private. It is now hidden from the public.`
                 });
             } else {
                 // ACTION: MAKE PUBLIC
-                // 1. Remove @everyone's ViewChannel and Connect denials.
+                // 1. Remove @everyone's ViewChannel denial.
                 await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-                    ViewChannel: null,
-                    Connect: null
+                    ViewChannel: null
                 }));
 
-                // 2. Cleanup: Remove specific overrides for all users.
+                // 2. Cleanup: Remove specific ViewChannel overrides for all users.
                 const userOverwrites = channel.permissionOverwrites.cache.filter(o => o.type === 1);
                 for (const [id, overwrite] of userOverwrites) {
-                    // Remove ViewChannel and Connect allowances.
-                    if (overwrite.allow.has(PermissionFlagsBits.ViewChannel) || overwrite.allow.has(PermissionFlagsBits.Connect)) {
-                        // If they don't have other special permissions, delete the whole override.
-                        if (overwrite.allow.toArray().every(p => p === 'ViewChannel' || p === 'Connect')) {
+                    // Remove ViewChannel allowance.
+                    if (overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
+                        // If they don't have other special permissions (like Connect from Lock state), delete the whole override.
+                        if (overwrite.allow.toArray().length === 1) {
                             await limiter.execute(() => overwrite.delete());
                         } else {
-                            // Otherwise just remove these two.
+                            // Otherwise just remove ViewChannel.
                             await limiter.execute(() => channel.permissionOverwrites.edit(id, {
-                                ViewChannel: null,
-                                Connect: null
+                                ViewChannel: null
                             }));
                         }
                     }
                 }
 
                 await interaction.reply({
-                    content: `👁️ **${interaction.member.displayName}** made the channel public. Anyone can see it.`
+                    content: `👁️ **${interaction.member.displayName}** made the channel public. It is now visible to everyone.`
                 });
             }
 

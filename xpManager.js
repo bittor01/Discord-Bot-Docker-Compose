@@ -152,12 +152,15 @@ async function tick(client, limiter) {
                     // Find the user's specific overwrite in this channel.
                     const overwrite = channel.permissionOverwrites.cache.get(userId);
                     if (overwrite) {
-                        // We only remove it if the channel is currently Locked (Connect denied for @everyone).
-                        // This enforces the rule that they lose their "spot" if they stay away too long.
+                        // We remove the user's specific override if the channel is currently
+                        // either Locked (Connect denied) or Private (ViewChannel denied).
+                        // This enforces the rule that they lose their "spot" in restricted rooms
+                        // once their session/acclimation has fully decayed.
                         const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
                         const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+                        const isPrivate = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
 
-                        if (isLocked) {
+                        if (isLocked || isPrivate) {
                             // Delete the overwrite to revoke their explicit Connect/ViewChannel permissions.
                             await limiter.execute(() => overwrite.delete());
                         }
