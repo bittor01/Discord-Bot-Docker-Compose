@@ -90,7 +90,8 @@ async function handleInteraction(interaction, runRenderTask) {
 
         try {
             const buffer = await runRenderTask('statsCard', cardData);
-            const attachment = new AttachmentBuilder(buffer, { name: 'stats.png' });
+            // Explicitly wrap in Buffer.from for Discord.js v14
+            const attachment = new AttachmentBuilder(Buffer.from(buffer), { name: 'stats.png' });
             await interaction.editReply({ files: [attachment] });
         } catch (error) {
             console.error('Stats rendering failed:', error);

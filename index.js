@@ -17,7 +17,8 @@ const {
     AttachmentBuilder,
     ModalBuilder,
     TextInputBuilder,
-    TextInputStyle
+    TextInputStyle,
+    Events
 } = require('discord.js');
 
 const db = require('./database');
@@ -74,7 +75,8 @@ async function refreshControlPanel(channel) {
         }
 
         const imageBuffer = await runRenderTask('controlPanel', members);
-        const attachment = new AttachmentBuilder(imageBuffer, { name: 'status.png' });
+        // Explicitly wrap in Buffer.from to fix ReqResourceType error
+        const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { name: 'status.png' });
 
         const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
         const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
@@ -97,9 +99,6 @@ async function refreshControlPanel(channel) {
     }
 }
 
-/**
- * Route notifications to the appropriate period channel
- */
 async function sendNotification(period, embed) {
     const channelId = process.env[`${period.toUpperCase()}_LEADERBOARD_CHANNEL_ID`];
     if (channelId) {
@@ -110,7 +109,7 @@ async function sendNotification(period, embed) {
     }
 }
 
-client.once('ready', async () => {
+client.once(Events.ClientReady, async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await client.application.commands.set(commands.commands);
 
@@ -139,7 +138,6 @@ client.once('ready', async () => {
                 const othersInChannel = Array.from(xpManager.userSessions.values())
                     .filter(s => s.channelId === session.channelId && s.userId !== userId && !s.leaveTimestamp);
 
-                // 1. Check achievements
                 const earnedAchs = await achievementManager.checkAchievements(userId, session, othersInChannel);
                 for (const ach of earnedAchs) {
                     const achEmbed = new EmbedBuilder()
@@ -150,12 +148,10 @@ client.once('ready', async () => {
                     await sendNotification(ach.type || 'lifetime', achEmbed);
                 }
 
-                // 2. Check Level Ups for each period
                 const periods = ['lifetime', 'weekly', 'monthly'];
                 for (const p of periods) {
                     const currentLevel = p === 'lifetime' ? user.level : (p === 'weekly' ? user.weekly_level : user.monthly_level);
                     if (currentLevel > old[p]) {
-                        // Special: Lifetime level up triggers Buffer Overflow
                         if (p === 'lifetime') await achievementManager.awardAchievement(userId, 'buffer_overflow');
 
                         const lvlEmbed = new EmbedBuilder()
@@ -166,7 +162,6 @@ client.once('ready', async () => {
 
                         await sendNotification(p, lvlEmbed);
 
-                        // Also congratulate in VC if it's the lifetime level
                         if (p === 'lifetime') {
                             const vc = await client.channels.fetch(session.channelId).catch(() => null);
                             if (vc) await limiter.execute(() => vc.send({ embeds: [lvlEmbed] }).catch(() => {}));

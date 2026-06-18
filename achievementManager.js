@@ -94,7 +94,8 @@ async function postAndPinLeaderboard(client, period, runRenderTask, limiter) {
     }
 
     const buffer = await runRenderTask('leaderboard', { period, entries });
-    const attachment = new AttachmentBuilder(buffer, { name: 'leaderboard.png' });
+    // Explicitly wrap in Buffer.from to ensure compatibility with Discord.js v14
+    const attachment = new AttachmentBuilder(Buffer.from(buffer), { name: 'leaderboard.png' });
 
     const message = await limiter.execute(() => channel.send({
         content: `🏆 **${period.toUpperCase()} HALL OF FAME** 🏆`,
