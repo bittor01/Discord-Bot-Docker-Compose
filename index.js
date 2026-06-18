@@ -38,10 +38,131 @@ const client = new Client({
     ]
 });
 
+// Helper: Calculate XP required for a specific level
+// Each level requires XP_LEVEL_RAMP more than the previous level
+function getXPForLevel(level) {
+    const base = parseFloat(process.env.XP_LEVEL_BASE) || 900;
+    const ramp = parseFloat(process.env.XP_LEVEL_RAMP) || 1.1;
+    if (level <= 0) return 0;
+    // XP for level N = base * (ramp ^ (N-1))
+    return Math.floor(base * Math.pow(ramp, level - 1));
+}
+
+// Helper: Calculate the cumulative XP needed to reach a level
+function getTotalXPForLevel(level) {
+    let total = 0;
+    for (let i = 1; i <= level; i++) {
+        total += getXPForLevel(i);
+    }
+    return total;
+}
+
+// Helper: Calculate level from total XP
+function getLevelFromXP(totalXP) {
+    let level = 0;
+    let xpNeeded = getXPForLevel(level + 1);
+    while (totalXP >= xpNeeded) {
+        totalXP -= xpNeeded;
+        level++;
+        xpNeeded = getXPForLevel(level + 1);
+    }
+    return level;
+}
+
 // Event: Client is ready
 client.once('ready', async () => {
     // Log successful login
     console.log(`Logged in as ${client.user.tag}!`);
+
+    // Start the XP awarding background task (runs every 60 seconds)
+    setInterval(async () => {
+        try {
+            // Configuration for XP
+            const xpPerSecond = parseFloat(process.env.XP_PER_SECOND) || 1;
+            const multiplierMuted = parseFloat(process.env.XP_MULTIPLIER_MUTED) || 0.5;
+            const multiplierDeafened = parseFloat(process.env.XP_MULTIPLIER_DEAFENED) || 0.1;
+            const cooldownMs = (parseInt(process.env.NOTIFICATION_COOLDOWN_MINUTES) || 15) * 60 * 1000;
+            const staticChannels = (process.env.STATIC_CHANNELS || '').split(',').filter(id => id.length > 0);
+
+            // Fetch all managed channels from database
+            const activeChannels = db.getAllChannels().map(c => c.voice_channel_id);
+            const validChannels = [...activeChannels, ...staticChannels];
+
+            for (const channelId of validChannels) {
+                const channel = await client.channels.fetch(channelId).catch(() => null);
+                if (!channel || channel.type !== ChannelType.GuildVoice) continue;
+
+                // Skip AFK channels
+                if (channel.id === channel.guild.afkChannelId) continue;
+
+                for (const [memberId, member] of channel.members) {
+                    if (member.user.bot) continue;
+
+                    // Calculate multiplier based on voice state
+                    let multiplier = 1.0;
+                    if (member.voice.deaf || member.voice.selfDeaf) {
+                        multiplier = multiplierDeafened;
+                    } else if (member.voice.mute || member.voice.selfMute) {
+                        multiplier = multiplierMuted;
+                    }
+
+                    // XP gain for 60 seconds
+                    const xpGain = xpPerSecond * 60 * multiplier;
+                    if (xpGain <= 0) continue;
+
+                    // Get current user stats
+                    const userRecord = db.getUser(memberId);
+                    const newTotalXP = userRecord.xp + xpGain;
+                    const newLevel = getLevelFromXP(newTotalXP);
+
+                    // Update database
+                    db.updateUserXP(memberId, xpGain, newLevel);
+
+                    // Check for level-up notification
+                    if (newLevel > userRecord.last_level_notified) {
+                        const now = Date.now();
+                        const timeSinceLastNotif = now - userRecord.last_notif_timestamp;
+
+                        if (timeSinceLastNotif >= cooldownMs) {
+                            // Calculate rank percentile for medal
+                            const percentile = db.getUserPercentile(memberId);
+                            let medal = '🥉 Bronze';
+                            let color = 0xCD7F32; // Bronze
+
+                            if (percentile >= 75) {
+                                medal = '🥇 Gold';
+                                color = 0xFFD700; // Gold
+                            } else if (percentile >= 50) {
+                                medal = '🥈 Silver';
+                                color = 0xC0C0C0; // Silver
+                            }
+
+                            // Create Level-Up Embed
+                            const levelUpEmbed = new EmbedBuilder()
+                                .setTitle('🎊 Level Up!')
+                                .setDescription(`Congratulations <@${memberId}>! You've reached **Level ${newLevel}**!`)
+                                .addFields(
+                                    { name: 'Rank', value: medal, inline: true },
+                                    { name: 'Total XP', value: Math.floor(newTotalXP).toString(), inline: true }
+                                )
+                                .setColor(color)
+                                .setTimestamp();
+
+                            // Send to channel's built-in text chat
+                            await channel.send({ embeds: [levelUpEmbed] }).catch(err => {
+                                console.error(`Failed to send level-up message to ${channel.id}:`, err);
+                            });
+
+                            // Update notification status
+                            db.updateLastNotified(memberId, newLevel, now);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error in XP background task:', error);
+        }
+    }, 60000);
 
     // Perform recovery routine to clean up dead or empty channels
     console.log('Running recovery routine...');

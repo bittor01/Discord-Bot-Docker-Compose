@@ -31,8 +31,65 @@ db.exec(`
     )
 `);
 
+// Create the users table if it doesn't exist
+// This table tracks user XP and Leveling progress
+db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        xp REAL DEFAULT 0,
+        level INTEGER DEFAULT 0,
+        last_notif_timestamp INTEGER DEFAULT 0,
+        last_level_notified INTEGER DEFAULT 0
+    )
+`);
+
 // Export the database interface functions
 module.exports = {
+    // User-related database operations
+
+    // Function to get or create a user record
+    getUser: (userId) => {
+        const stmt = db.prepare('SELECT * FROM users WHERE user_id = ?');
+        let user = stmt.get(userId);
+        if (!user) {
+            // Initialize new user if not found
+            db.prepare('INSERT INTO users (user_id) VALUES (?)').run(userId);
+            user = stmt.get(userId);
+        }
+        return user;
+    },
+
+    // Function to update user XP and level
+    updateUserXP: (userId, xpGain, newLevel) => {
+        const stmt = db.prepare('UPDATE users SET xp = xp + ?, level = ? WHERE user_id = ?');
+        return stmt.run(xpGain, newLevel, userId);
+    },
+
+    // Function to update the last notified level and timestamp
+    updateLastNotified: (userId, level, timestamp) => {
+        const stmt = db.prepare('UPDATE users SET last_level_notified = ?, last_notif_timestamp = ? WHERE user_id = ?');
+        return stmt.run(level, timestamp, userId);
+    },
+
+    // Function to calculate the percentile rank of a user based on XP
+    getUserPercentile: (userId) => {
+        // Count total users
+        const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+        if (totalUsers <= 1) return 100; // Only user is 100th percentile
+
+        // Count users with less XP than this user
+        const userXP = db.prepare('SELECT xp FROM users WHERE user_id = ?').get(userId)?.xp || 0;
+        const usersBelow = db.prepare('SELECT COUNT(*) as count FROM users WHERE xp < ?').get(userXP).count;
+        const usersSame = db.prepare('SELECT COUNT(*) as count FROM users WHERE xp = ?').get(userXP).count;
+
+        // Calculate percentile: ((number of people below + 0.5 * same) / total number of people) * 100
+        // We use a simplified version for rank: (rank - 1) / (total - 1)
+        // Here we just use: (usersBelow / (totalUsers - 1)) * 100
+        return (usersBelow / (totalUsers - 1)) * 100;
+    },
+
+    // Channel-related database operations
+
     // Function to add a new active channel to the database
     addChannel: (voiceId, ownerId, controlMsgId) => {
         // Prepare the insert statement
