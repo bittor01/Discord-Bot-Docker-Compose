@@ -135,7 +135,7 @@ async function calculateMultiplier(client, userId, channelMembers, limiter, guil
     if (groupSum > 0) buffs.push({ id: 'group', value: groupSum, type: 'buff' });
 
     // Acclimation (if not at 100%, it's effectively a penalty/ramp)
-    if (member.acclimation < 1.0) buffs.push({ id: 'ramp', value: member.acclimation, type: 'neutral' });
+    if (member.acclimation < 1.0) buffs.push({ id: 'acclimation', value: member.acclimation, type: 'neutral' });
 
     // Screenshare Bonus
     if (member.isSharing) buffs.push({ id: 'sharing', value: XP_SCREENSHARE_MULT, type: 'buff' });

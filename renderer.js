@@ -31,29 +31,31 @@ async function renderControlPanelImage(members) {
         const y = padding + 20 + i * rowHeight;
 
         // --- DRAW LEVEL ---
+        // Larger font for Level
         ctx.fillStyle = '#faa61a'; // Gold/Yellow for levels
-        ctx.font = `bold 14px ${fontStack}`;
+        ctx.font = `bold 18px ${fontStack}`;
         const levelText = `${m.level}`;
         ctx.fillText(levelText, padding, y);
 
         // --- DRAW NAME ---
+        // Larger font for Name
         ctx.fillStyle = '#ffffff';
-        ctx.font = `bold 16px ${fontStack}`;
-        // Truncate name slightly more to save space
-        const nameText = m.name.length > 16 ? m.name.substring(0, 14) + '..' : m.name;
-        ctx.fillText(nameText, padding + 30, y);
+        ctx.font = `bold 20px ${fontStack}`;
+        // Truncate name slightly less as we have space
+        const nameText = m.name.length > 20 ? m.name.substring(0, 18) + '..' : m.name;
+        ctx.fillText(nameText, padding + 35, y);
 
         // --- DRAW STUMPY XP BAR ---
-        // Narrower bar to fit charms on the same line
-        const barX = padding + 160;
-        const barY = y - 18;
-        const barWidth = 180; // Reduced from 300
-        const barHeight = 20; // Slightly shorter
+        // Wider bar to use more of the 700px width
+        const barX = padding + 220; // Adjusted for larger name space
+        const barY = y - 20;
+        const barWidth = 240; // Increased to use more space
+        const barHeight = 24; // Increased height
 
         // Bar background
         ctx.fillStyle = '#4f545c';
         ctx.beginPath();
-        ctx.roundRect(barX, barY, barWidth, barHeight, 3);
+        ctx.roundRect(barX, barY, barWidth, barHeight, 4);
         ctx.fill();
 
         // Bar fill progress
@@ -61,16 +63,16 @@ async function renderControlPanelImage(members) {
             let fillColor = m.progress < 0.35 ? '#ff4742' : (m.progress < 0.75 ? '#faa61a' : '#43b581');
             ctx.fillStyle = fillColor;
             ctx.beginPath();
-            const fillWidth = Math.max(6, barWidth * m.progress);
-            ctx.roundRect(barX, barY, fillWidth, barHeight, 3);
+            const fillWidth = Math.max(8, barWidth * m.progress);
+            ctx.roundRect(barX, barY, fillWidth, barHeight, 4);
             ctx.fill();
         }
 
         // --- DRAW CHARMS / BUFFS ---
-        let charmX = barX + barWidth + 15;
-        const charmY = y - 18;
-        const charmSize = 20;
-        const charmSpacing = 5;
+        let charmX = barX + barWidth + 20; // More spacing after bar
+        const charmY = y - 20;
+        const charmSize = 24; // Increased charm size
+        const charmSpacing = 8; // More spacing between charms
 
         (m.buffs || []).forEach(buff => {
             // Determine charm color and symbol based on type
@@ -81,10 +83,11 @@ async function renderControlPanelImage(members) {
             if (buff.type === 'neutral') color = '#b9bbbe'; // Gray (neutral)
 
             // Define symbols for each buff ID
+            // 'A' for Acclimation replaces 'R' (Ramp) for better clarity
             switch (buff.id) {
                 case 'group': symbol = 'G'; break;
                 case 'sharing': symbol = 'S'; color = '#ff73fa'; break; // Screenshare purple
-                case 'ramp': symbol = 'R'; break;
+                case 'acclimation': symbol = 'A'; break;
                 case 'mute': symbol = 'M'; break;
                 case 'deaf': symbol = 'D'; break;
             }
@@ -97,9 +100,9 @@ async function renderControlPanelImage(members) {
 
             // Draw charm symbol text
             ctx.fillStyle = '#ffffff';
-            ctx.font = `bold 10px ${fontStack}`;
+            ctx.font = `bold 12px ${fontStack}`; // Larger symbol text
             ctx.textAlign = 'center';
-            ctx.fillText(symbol, charmX + charmSize / 2, charmY + charmSize / 2 + 4);
+            ctx.fillText(symbol, charmX + charmSize / 2, charmY + charmSize / 2 + 5);
             ctx.textAlign = 'left';
 
             charmX += charmSize + charmSpacing;
@@ -107,7 +110,7 @@ async function renderControlPanelImage(members) {
 
         // --- DRAW MULTIPLIER ---
         ctx.fillStyle = '#ffffff';
-        ctx.font = `bold 14px ${fontStack}`;
+        ctx.font = `bold 16px ${fontStack}`; // Larger multiplier font
         // Position multiplier after the charms
         ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, charmX + 10, y);
     });
