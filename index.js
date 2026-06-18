@@ -140,8 +140,8 @@ async function refreshControlPanel(channel) {
         const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { name: 'status.png' });
 
         const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
-        const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-        const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+        const isLocked = !!everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+        const isHidden = !!everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
 
         const updatedEmbed = new EmbedBuilder()
             .setTitle('Voice Channel Control Panel')
@@ -153,7 +153,16 @@ async function refreshControlPanel(channel) {
             .setImage('attachment://status.png')
             .setTimestamp();
 
-        await limiter.execute(() => message.edit({ embeds: [updatedEmbed], files: [attachment] }));
+        const row1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('manage_limit').setLabel('Set Limit').setStyle(ButtonStyle.Primary)
+        );
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('manage_privacy').setLabel(isLocked ? 'Unlock' : 'Lock').setStyle(isLocked ? ButtonStyle.Success : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('manage_visibility').setLabel(isHidden ? 'Show' : 'Hide').setStyle(isHidden ? ButtonStyle.Success : ButtonStyle.Secondary)
+        );
+
+        await limiter.execute(() => message.edit({ embeds: [updatedEmbed], files: [attachment], components: [row1, row2] }));
 
     } catch (error) {
         console.error(`Error refreshing control panel for ${channel.id}:`, error);
@@ -303,9 +312,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
                 new ButtonBuilder().setCustomId('manage_limit').setLabel('Set Limit').setStyle(ButtonStyle.Primary)
             );
+            // Default to 'Lock' and 'Hide' since rooms are public/visible by default
             const row2 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock/Unlock').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('manage_visibility').setLabel('Hide/Show').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('manage_visibility').setLabel('Hide').setStyle(ButtonStyle.Secondary)
             );
             const controlMessage = await limiter.execute(() => voiceChannel.send({ embeds: [controlEmbed], components: [row1, row2] }));
             try { await limiter.execute(() => controlMessage.pin()); } catch (e) {}
@@ -350,18 +360,30 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.showModal(modal);
         }
         if (customId === 'manage_privacy') {
-            const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-            const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
-            await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
-            await refreshControlPanel(channel);
+            try {
+                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+                const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
+                await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
+                await refreshControlPanel(channel);
+            } catch (err) {
+                console.error('Error toggling privacy:', err);
+                const content = err.code === 50013 ? '❌ I do not have permission to change channel permissions.' : '❌ An error occurred.';
+                await interaction.reply({ content, ephemeral: true }).catch(() => {});
+            }
         }
         if (customId === 'manage_visibility') {
-            const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-            const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: isHidden ? null : false }));
-            await interaction.reply({ content: `${isHidden ? '👁️' : '👻'} ${interaction.member.displayName} ${isHidden ? 'showed' : 'hid'} the channel.` });
-            await refreshControlPanel(channel);
+            try {
+                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+                const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: isHidden ? null : false }));
+                await interaction.reply({ content: `${isHidden ? '👁️' : '👻'} ${interaction.member.displayName} ${isHidden ? 'showed' : 'hid'} the channel.` });
+                await refreshControlPanel(channel);
+            } catch (err) {
+                console.error('Error toggling visibility:', err);
+                const content = err.code === 50013 ? '❌ I do not have permission to change channel permissions.' : '❌ An error occurred.';
+                await interaction.reply({ content, ephemeral: true }).catch(() => {});
+            }
         }
         if (customId === 'manage_limit') {
             const modal = new ModalBuilder().setCustomId('modal_limit_change').setTitle('Set User Limit');
