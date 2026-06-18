@@ -145,6 +145,19 @@ async function tick(client, limiter) {
 
             // If they've been gone past the grace period, wipe the session
             if (awayTime > gracePeriodHold + gracePeriodDecay) {
+                // If the channel was LOCKED, remove their re-entry permission now that their grace period expired
+                const channel = await limiter.execute(() => client.channels.fetch(session.channelId).catch(() => null));
+                if (channel) {
+                    const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
+                    const isLocked = !!everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+                    if (isLocked) {
+                        try {
+                            // Specifically delete the user overwrite so they can't sneak back in
+                            await limiter.execute(() => channel.permissionOverwrites.delete(userId).catch(() => {}));
+                        } catch (e) {}
+                    }
+                }
+
                 userSessions.delete(userId);
                 db.clearSession(userId);
                 continue;

@@ -147,8 +147,8 @@ async function refreshControlPanel(channel) {
             .setTitle('Voice Channel Control Panel')
             .setColor(isLocked ? 0xff4742 : 0x00AE86)
             .addFields(
-                { name: 'Privacy', value: isLocked ? '🔒 Locked' : '🔓 Public', inline: true },
-                { name: 'Visibility', value: isHidden ? '👻 Hidden' : '👁️ Visible', inline: true }
+                { name: 'Room Access', value: isLocked ? '🔒 Locked' : '🔓 Open', inline: true },
+                { name: 'Discovery', value: isHidden ? '👻 Private' : '🌍 Public', inline: true }
             )
             .setImage('attachment://status.png')
             .setTimestamp();
@@ -159,7 +159,7 @@ async function refreshControlPanel(channel) {
         );
         const row2 = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('manage_privacy').setLabel(isLocked ? 'Unlock' : 'Lock').setStyle(isLocked ? ButtonStyle.Success : ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('manage_visibility').setLabel(isHidden ? 'Show' : 'Hide').setStyle(isHidden ? ButtonStyle.Success : ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId('manage_visibility').setLabel(isHidden ? 'Public' : 'Private').setStyle(isHidden ? ButtonStyle.Success : ButtonStyle.Secondary)
         );
 
         await limiter.execute(() => message.edit({ embeds: [updatedEmbed], files: [attachment], components: [row1, row2] }));
@@ -304,7 +304,13 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             const voiceChannel = await limiter.execute(() => newState.guild.channels.create({
                 name: `${member.displayName}'s Room`,
                 type: ChannelType.GuildVoice,
-                parent: CATEGORY_ID
+                parent: CATEGORY_ID,
+                permissionOverwrites: [
+                    {
+                        id: newState.guild.roles.everyone.id,
+                        deny: [PermissionFlagsBits.ViewChannel]
+                    }
+                ]
             }));
             await limiter.execute(() => member.voice.setChannel(voiceChannel));
             const controlEmbed = new EmbedBuilder().setTitle('Voice Channel Control Panel').setDescription('Manage your channel below.').setColor(0x00AE86);
@@ -362,9 +368,30 @@ client.on('interactionCreate', async (interaction) => {
         if (customId === 'manage_privacy') {
             try {
                 const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-                const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
-                await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
+                const isLocked = !!everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+
+                if (!isLocked) {
+                    // LOCKING: Grant explicit Connect to everyone currently in the channel
+                    const memberIds = Array.from(channel.members.keys());
+                    for (const mId of memberIds) {
+                        await limiter.execute(() => channel.permissionOverwrites.edit(mId, { Connect: true }));
+                    }
+                    // Then deny for everyone else
+                    await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: false }));
+                } else {
+                    // UNLOCKING: Remove all explicit member overwrites for Connect
+                    const overwrites = Array.from(channel.permissionOverwrites.cache.values());
+                    for (const over of overwrites) {
+                        // Only remove user-specific overwrites, don't touch @everyone or role-based ones
+                        if (over.type === 1) { // 1 = Member
+                            await limiter.execute(() => channel.permissionOverwrites.delete(over.id));
+                        }
+                    }
+                    // Then clear the everyone deny
+                    await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: null }));
+                }
+
+                await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} **${isLocked ? 'Unlocked' : 'Locked'}** the channel.` });
                 await refreshControlPanel(channel);
             } catch (err) {
                 console.error('Error toggling privacy:', err);
@@ -376,8 +403,12 @@ client.on('interactionCreate', async (interaction) => {
             try {
                 const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
                 const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
-                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: isHidden ? null : false }));
-                await interaction.reply({ content: `${isHidden ? '👁️' : '👻'} ${interaction.member.displayName} ${isHidden ? 'showed' : 'hid'} the channel.` });
+                // Toggle both visibility AND connect for @everyone when making public
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                    ViewChannel: isHidden ? null : false,
+                    Connect: isHidden ? null : false
+                }));
+                await interaction.reply({ content: `🌍 ${interaction.member.displayName} made the channel **${isHidden ? 'Public' : 'Private'}**.` });
                 await refreshControlPanel(channel);
             } catch (err) {
                 console.error('Error toggling visibility:', err);
