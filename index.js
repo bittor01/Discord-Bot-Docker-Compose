@@ -113,7 +113,8 @@ async function refreshControlPanel(channel) {
                 progress: Math.min(1.0, Math.max(0, progress)),
                 isSharing: mData.isSharing,
                 multiplier: mult,
-                level: displayLevel
+                level: displayLevel,
+                estimatedMinutes: xpManager.estimateTimeToNextLevel(currentXP, mult, displayLevel)
             });
         }
 
@@ -275,11 +276,28 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     if (newState.channelId === HUB_CHANNEL_ID && oldState.channelId !== HUB_CHANNEL_ID) {
         try {
             const member = newState.member;
-            const voiceChannel = await limiter.execute(() => newState.guild.channels.create({
+            const guild = newState.guild;
+            // Create a new private voice channel for the member
+            const voiceChannel = await limiter.execute(() => guild.channels.create({
                 name: `${member.displayName}'s Room`,
                 type: ChannelType.GuildVoice,
                 parent: CATEGORY_ID
             }));
+            // Set default permissions: @everyone cannot connect or view
+            await limiter.execute(() =>
+                voiceChannel.permissionOverwrites.edit(guild.roles.everyone, {
+                    Connect: false,
+                    ViewChannel: false
+                })
+            );
+            // Grant the channel owner full access
+            await limiter.execute(() =>
+                voiceChannel.permissionOverwrites.edit(member.id, {
+                    Connect: true,
+                    ViewChannel: true
+                })
+            );
+            // Move the member into the newly created channel
             await limiter.execute(() => member.voice.setChannel(voiceChannel));
             const controlEmbed = new EmbedBuilder().setTitle('Voice Channel Control Panel').setDescription('Manage your channel below.').setColor(0x00AE86);
             const row1 = new ActionRowBuilder().addComponents(
@@ -333,9 +351,21 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.showModal(modal);
         }
         if (customId === 'manage_privacy') {
+            // Verify bot can manage permissions
+            const botPerms = channel.permissionsFor(client.user);
+            if (!botPerms || !botPerms.has(PermissionFlagsBits.ManageRoles)) {
+                await interaction.reply({
+                    content: '❌ I lack permission to manage channel permissions. Please adjust my role.',
+                    ephemeral: true
+                });
+                return;
+            }
             const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
             const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
+            // Toggle lock: remove deny if locked, otherwise deny Connect
+            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                Connect: isLocked ? null : false
+            }));
             await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
             await refreshControlPanel(channel);
         }
