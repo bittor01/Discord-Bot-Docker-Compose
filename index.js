@@ -40,6 +40,9 @@ const client = new Client({
 xpManager.init();
 achievementManager.init();
 
+/**
+ * Offloads Canvas rendering to a worker thread
+ */
 function runRenderTask(type, data) {
     return new Promise((resolve, reject) => {
         const worker = new Worker(path.join(__dirname, 'rendererWorker.js'));
@@ -53,6 +56,9 @@ function runRenderTask(type, data) {
     });
 }
 
+/**
+ * Refreshes the control panel in the voice channel's text chat
+ */
 async function refreshControlPanel(channel) {
     try {
         const record = db.getChannel(channel.id);
@@ -97,7 +103,10 @@ async function refreshControlPanel(channel) {
     }
 }
 
-async function sendNotification(embed) {
+/**
+ * Sends a notification to the central BOT_OUTPUT_CHANNEL_ID feed
+ */
+async function sendToActivityFeed(embed) {
     const outputChannelId = process.env.BOT_OUTPUT_CHANNEL_ID;
     if (outputChannelId) {
         const channel = await client.channels.fetch(outputChannelId).catch(() => null);
@@ -111,9 +120,9 @@ client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await client.application.commands.set(commands.commands);
 
+    // Main 10-second loop for XP, Acclimation, and Feed updates
     setInterval(async () => {
         try {
-            // Track levels before tick
             const oldLevels = new Map();
             for (const [userId, session] of xpManager.userSessions) {
                 if (!session.leaveTimestamp) {
@@ -124,37 +133,42 @@ client.once('ready', async () => {
 
             await xpManager.tick(client, limiter);
 
-            // Check for level ups and achievements
             for (const [userId, session] of xpManager.userSessions) {
                 if (session.leaveTimestamp) continue;
 
                 const user = db.getUser(userId);
-
-                // Achievement check
                 const othersInChannel = Array.from(xpManager.userSessions.values())
                     .filter(s => s.channelId === session.channelId && s.userId !== userId && !s.leaveTimestamp);
 
-                await achievementManager.checkAchievements(userId, session, othersInChannel);
+                // 1. Check Achievements
+                const earnedAchs = await achievementManager.checkAchievements(userId, session, othersInChannel);
+                for (const ach of earnedAchs) {
+                    const achEmbed = new EmbedBuilder()
+                        .setTitle('🏆 Achievement Unlocked!')
+                        .setDescription(`<@${userId}> earned the **${ach.name}** achievement!\n*${ach.description}*`)
+                        .setColor(0x00AE86)
+                        .setTimestamp();
+                    await sendToActivityFeed(achEmbed);
+                }
 
-                // Level up check
+                // 2. Check Level Up
                 if (user.level > (oldLevels.get(userId) || 0)) {
-                    // Award "Buffer Overflow" achievement
                     await achievementManager.awardAchievement(userId, 'buffer_overflow');
 
-                    const embed = new EmbedBuilder()
+                    const lvlEmbed = new EmbedBuilder()
                         .setTitle('🎊 Level Up!')
                         .setDescription(`Congratulations <@${userId}>! You've reached **Level ${user.level}**!`)
                         .setColor(0xFFD700)
                         .setTimestamp();
 
-                    await sendNotification(embed);
+                    await sendToActivityFeed(lvlEmbed);
 
-                    // Also send to VC chat if it exists
                     const vc = await client.channels.fetch(session.channelId).catch(() => null);
-                    if (vc) await limiter.execute(() => vc.send({ embeds: [embed] }).catch(() => {}));
+                    if (vc) await limiter.execute(() => vc.send({ embeds: [lvlEmbed] }).catch(() => {}));
                 }
             }
 
+            // Update all pinned control panels
             const activeChannels = db.getAllChannels();
             for (const record of activeChannels) {
                 const channel = await client.channels.fetch(record.voice_channel_id).catch(() => null);
@@ -163,15 +177,17 @@ client.once('ready', async () => {
                 }
             }
 
+            // Handle weekly/monthly resets and leaderboard posts
             await achievementManager.checkResets(client, runRenderTask, limiter);
 
+            // Channel Cleanup
             const now = Date.now();
             const cleanupDelayMs = (parseInt(process.env.EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES) || 0) * 60 * 1000;
             for (const [channelId, emptySince] of emptyChannels) {
                 if (now - emptySince >= cleanupDelayMs) {
                     const channel = await client.channels.fetch(channelId).catch(() => null);
                     if (channel) {
-                        await limiter.execute(() => channel.delete('Empty for delay period'));
+                        await limiter.execute(() => channel.delete('Empty cleanup delay expired'));
                     }
                     db.removeChannel(channelId);
                     emptyChannels.delete(channelId);
@@ -179,10 +195,11 @@ client.once('ready', async () => {
             }
 
         } catch (error) {
-            console.error('Error in main tick loop:', error);
+            console.error('Error in main loop:', error);
         }
     }, 10000);
 
+    // Startup Recovery Logic
     const CATEGORY_ID = process.env.CATEGORY_ID;
     const HUB_CHANNEL_ID = process.env.HUB_CHANNEL_ID;
 
@@ -195,10 +212,11 @@ client.once('ready', async () => {
 
             for (const [id, channel] of channelsInCategory) {
                 if (id === HUB_CHANNEL_ID) continue;
+                // Important: Only clean up voice channels. Text channels are safe.
                 if (channel.type !== ChannelType.GuildVoice) continue;
 
                 if (channel.members.size === 0) {
-                    await limiter.execute(() => channel.delete('Recovery: Empty'));
+                    await limiter.execute(() => channel.delete('Recovery: Channel empty'));
                     db.removeChannel(id);
                 } else {
                     for (const [memberId, member] of channel.members) {
@@ -208,10 +226,13 @@ client.once('ready', async () => {
             }
         }
     } catch (error) {
-        console.error('Error during recovery:', error);
+        console.error('Error during startup recovery:', error);
     }
 });
 
+/**
+ * Handle Voice State Updates
+ */
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const HUB_CHANNEL_ID = process.env.HUB_CHANNEL_ID;
     const CATEGORY_ID = process.env.CATEGORY_ID;
@@ -251,7 +272,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             db.addChannel(voiceChannel.id, member.id, controlMessage.id);
             xpManager.updateUserPresence(member.id, voiceChannel.id, false);
         } catch (error) {
-            console.error('Error creating room:', error);
+            console.error('Error in voice room creation:', error);
         }
     }
 
@@ -272,6 +293,9 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
 });
 
+/**
+ * Handle Interactions (Buttons, Modals, Slash Commands)
+ */
 client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
         await commands.handleInteraction(interaction, runRenderTask);
@@ -284,7 +308,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const channel = interaction.channel;
         const member = channel.members.get(interaction.user.id);
-        if (!member) return interaction.reply({ content: 'You must be in the voice channel.', ephemeral: true });
+        if (!member) return interaction.reply({ content: 'You must be in the voice channel to use the controls.', ephemeral: true });
 
         const { customId } = interaction;
 
@@ -323,15 +347,15 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.deferReply();
                 const newName = interaction.fields.getTextInputValue('new_name');
                 await limiter.execute(() => interaction.channel.setName(newName));
-                await interaction.editReply({ content: `📝 Renamed to: **${newName}**` });
+                await interaction.editReply({ content: `📝 ${interaction.member.displayName} renamed the room to: **${newName}**` });
                 await refreshControlPanel(interaction.channel);
             }
             if (interaction.customId === 'modal_limit_change') {
                 await interaction.deferReply({ ephemeral: true });
                 const limit = parseInt(interaction.fields.getTextInputValue('user_limit'));
-                if (isNaN(limit) || limit < 0 || limit > 99) return interaction.editReply({ content: 'Invalid limit.' });
+                if (isNaN(limit) || limit < 0 || limit > 99) return interaction.editReply({ content: 'Invalid limit. Use 0-99.' });
                 await limiter.execute(() => interaction.channel.setUserLimit(limit));
-                await interaction.editReply({ content: `👥 Limit set to ${limit}.` });
+                await interaction.editReply({ content: `👥 ${interaction.member.displayName} set user limit to **${limit}**.` });
                 await refreshControlPanel(interaction.channel);
             }
         }
