@@ -1,14 +1,9 @@
 /**
  * HubBot - Dynamic Voice Channel Bot
- *
- * This bot creates temporary voice channels when users join a designated "Hub" channel.
- * It provides a control panel for owners to manage their channels.
  */
 
-// Load environment variables from .env file
 require('dotenv').config();
 
-// Import necessary classes from discord.js
 const {
     Client,
     GatewayIntentBits,
@@ -18,23 +13,23 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
-    StringSelectMenuBuilder,
+    InteractionType,
+    AttachmentBuilder,
     ModalBuilder,
     TextInputBuilder,
-    TextInputStyle,
-    InteractionType
+    TextInputStyle
 } = require('discord.js');
 
-// Import database helper functions
 const db = require('./database');
+const xpManager = require('./xpManager');
+const achievementManager = require('./achievementManager');
+const limiter = require('./rateLimiter');
+const { Worker } = require('worker_threads');
+const path = require('path');
+const commands = require('./commands');
 
-// Track when channels become empty for delayed cleanup
-// Key: Channel ID, Value: Timestamp (Date.now())
 const emptyChannels = new Map();
 
-// Initialize the Discord client with required intents
-// Guilds: To manage channels
-// GuildVoiceStates: To detect users joining/leaving voice channels
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -42,583 +37,305 @@ const client = new Client({
     ]
 });
 
-// Helper: Calculate XP required for a specific level
-// Each level requires XP_LEVEL_RAMP more than the previous level
-function getXPForLevel(level) {
-    const base = parseFloat(process.env.XP_LEVEL_BASE) || 900;
-    const ramp = parseFloat(process.env.XP_LEVEL_RAMP) || 1.1;
-    if (level <= 0) return 0;
-    // XP for level N = base * (ramp ^ (N-1))
-    return Math.floor(base * Math.pow(ramp, level - 1));
+xpManager.init();
+achievementManager.init();
+
+function runRenderTask(type, data) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(path.join(__dirname, 'rendererWorker.js'));
+        worker.on('message', (msg) => {
+            if (msg.status === 'success') resolve(msg.buffer);
+            else reject(new Error(msg.error));
+            worker.terminate();
+        });
+        worker.on('error', reject);
+        worker.postMessage({ type, data });
+    });
 }
 
-// Helper: Calculate level from total XP
-function getLevelFromXP(totalXP) {
-    let level = 0;
-    let xpNeeded = getXPForLevel(level + 1);
-    while (totalXP >= xpNeeded) {
-        totalXP -= xpNeeded;
-        level++;
-        xpNeeded = getXPForLevel(level + 1);
-    }
-    return level;
-}
-
-/**
- * Helper: Refresh the control panel embed with current channel state.
- * @param {VoiceChannel} channel The voice channel to refresh.
- */
 async function refreshControlPanel(channel) {
     try {
-        // Look up the channel record to find the control message ID
         const record = db.getChannel(channel.id);
         if (!record || !record.control_message_id) return;
 
-        // Fetch the control message
-        const message = await channel.messages.fetch(record.control_message_id).catch(() => null);
+        const message = await limiter.execute(() => channel.messages.fetch(record.control_message_id).catch(() => null));
         if (!message) return;
 
-        // Get current channel state
-        const userLimit = channel.userLimit;
+        const members = [];
+        const channelMembersArray = Array.from(channel.members.values());
+        for (const member of channelMembersArray) {
+            const session = xpManager.userSessions.get(member.id) || { acclimation: 0, isSharing: false };
+            members.push({
+                name: member.displayName,
+                acclimation: session.acclimation,
+                isSharing: member.voice.streaming || session.isSharing,
+                multiplier: 1.0
+            });
+        }
+
+        const imageBuffer = await runRenderTask('controlPanel', members);
+        const attachment = new AttachmentBuilder(imageBuffer, { name: 'status.png' });
+
         const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
         const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
         const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
 
-        // Build status strings
-        const privacyStatus = isLocked ? '🔒 Locked' : '🔓 Public';
-        const visibilityStatus = isHidden ? '👻 Hidden' : '👁️ Visible';
-        const limitStatus = userLimit === 0 ? 'Unlimited' : `${userLimit} Users`;
-
-        // Create the updated Embed
         const updatedEmbed = new EmbedBuilder()
             .setTitle('Voice Channel Control Panel')
-            .setDescription('Use the buttons below to manage this voice channel.')
             .setColor(isLocked ? 0xff4742 : 0x00AE86)
             .addFields(
-                { name: 'Channel Name', value: `${channel.name}`, inline: true },
-                { name: 'User Limit', value: limitStatus, inline: true },
-                { name: 'Privacy', value: privacyStatus, inline: true },
-                { name: 'Visibility', value: visibilityStatus, inline: true },
-                { name: 'Status', value: 'Active', inline: true }
+                { name: 'Privacy', value: isLocked ? '🔒 Locked' : '🔓 Public', inline: true },
+                { name: 'Visibility', value: isHidden ? '👻 Hidden' : '👁️ Visible', inline: true }
             )
-            .setFooter({ text: 'Anyone currently in this channel can use the controls.' })
+            .setImage('attachment://status.png')
             .setTimestamp();
 
-        // Edit the message with the new embed
-        await message.edit({ embeds: [updatedEmbed] });
+        await limiter.execute(() => message.edit({ embeds: [updatedEmbed], files: [attachment] }));
 
     } catch (error) {
         console.error(`Error refreshing control panel for ${channel.id}:`, error);
     }
 }
 
-// Event: Client is ready
-client.once('ready', async () => {
-    // Log successful login
-    console.log(`Logged in as ${client.user.tag}!`);
+async function sendNotification(embed) {
+    const outputChannelId = process.env.BOT_OUTPUT_CHANNEL_ID;
+    if (outputChannelId) {
+        const channel = await client.channels.fetch(outputChannelId).catch(() => null);
+        if (channel) {
+            await limiter.execute(() => channel.send({ embeds: [embed] }));
+        }
+    }
+}
 
-    // Start the background maintenance task (runs every 60 seconds)
-    // This handles both XP awarding and delayed channel cleanup
+client.once('ready', async () => {
+    console.log(`Logged in as ${client.user.tag}!`);
+    await client.application.commands.set(commands.commands);
+
     setInterval(async () => {
         try {
-            // Configuration for XP
-            const xpPerSecond = process.env.XP_PER_SECOND !== undefined ? parseFloat(process.env.XP_PER_SECOND) : 1;
-            const multiplierMuted = process.env.XP_MULTIPLIER_MUTED !== undefined ? parseFloat(process.env.XP_MULTIPLIER_MUTED) : 0.5;
-            const multiplierDeafened = process.env.XP_MULTIPLIER_DEAFENED !== undefined ? parseFloat(process.env.XP_MULTIPLIER_DEAFENED) : 0.1;
-            const cooldownMs = (parseInt(process.env.NOTIFICATION_COOLDOWN_MINUTES) || 15) * 60 * 1000;
-            const staticChannels = (process.env.STATIC_CHANNELS || '').split(',').map(id => id.trim()).filter(id => id.length > 0);
-
-            // Fetch all managed channels from database
-            const activeChannels = db.getAllChannels().map(c => c.voice_channel_id);
-            // Use a Set to ensure we don't process the same channel twice
-            const validChannels = new Set([...activeChannels, ...staticChannels]);
-
-            // Track current maintenance time
-            const now = Date.now();
-            const cleanupDelayMs = (parseInt(process.env.EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES) || 0) * 60 * 1000;
-
-            for (const channelId of validChannels) {
-                const channel = await client.channels.fetch(channelId).catch(() => null);
-                if (!channel || channel.type !== ChannelType.GuildVoice) {
-                    // Clean up DB if channel is gone
-                    if (!channel && activeChannels.includes(channelId)) {
-                        db.removeChannel(channelId);
-                        emptyChannels.delete(channelId);
-                    }
-                    continue;
-                }
-
-                // --- 1. Delayed Cleanup Logic ---
-                const isManaged = activeChannels.includes(channelId);
-                if (isManaged) {
-                    if (channel.members.size === 0) {
-                        // Mark as empty if not already tracked
-                        if (!emptyChannels.has(channelId)) {
-                            emptyChannels.set(channelId, now);
-                        }
-
-                        const emptySince = emptyChannels.get(channelId);
-                        if (now - emptySince >= cleanupDelayMs) {
-                            try {
-                                await channel.delete('Temporary channel empty for delay period');
-                                db.removeChannel(channelId);
-                                emptyChannels.delete(channelId);
-                                console.log(`Cleaned up empty channel: ${channelId} (Empty for ${Math.round((now - emptySince) / 1000)}s)`);
-                                continue; // Skip XP awarding for this deleted channel
-                            } catch (err) {
-                                console.error(`Error deleting channel ${channelId}:`, err);
-                            }
-                        }
-                    } else {
-                        // Channel is no longer empty
-                        emptyChannels.delete(channelId);
-                    }
-                }
-
-                // --- 2. XP Awarding Logic ---
-
-                // Skip AFK channels
-                if (channel.id === channel.guild.afkChannelId) continue;
-
-                for (const [memberId, member] of channel.members) {
-                    if (member.user.bot) continue;
-
-                    // Calculate multiplier based on voice state
-                    let multiplier = 1.0;
-                    if (member.voice.deaf || member.voice.selfDeaf) {
-                        multiplier = multiplierDeafened;
-                    } else if (member.voice.mute || member.voice.selfMute) {
-                        multiplier = multiplierMuted;
-                    }
-
-                    // XP gain for 60 seconds
-                    const xpGain = xpPerSecond * 60 * multiplier;
-                    if (xpGain <= 0) continue;
-
-                    // Get current user stats
-                    const userRecord = db.getUser(memberId);
-                    const newTotalXP = userRecord.xp + xpGain;
-                    const newLevel = getLevelFromXP(newTotalXP);
-
-                    // Update database
-                    db.updateUserXP(memberId, xpGain, newLevel);
-
-                    // Check for level-up notification
-                    if (newLevel > userRecord.last_level_notified) {
-                        const now = Date.now();
-                        const timeSinceLastNotif = now - userRecord.last_notif_timestamp;
-
-                        if (timeSinceLastNotif >= cooldownMs) {
-                            // Calculate rank percentile for medal
-                            const percentile = db.getUserPercentile(memberId);
-                            let medal = '🥉 Bronze';
-                            let color = 0xCD7F32; // Bronze
-
-                            if (percentile >= 75) {
-                                medal = '🥇 Gold';
-                                color = 0xFFD700; // Gold
-                            } else if (percentile >= 50) {
-                                medal = '🥈 Silver';
-                                color = 0xC0C0C0; // Silver
-                            }
-
-                            // Create Level-Up Embed
-                            const levelUpEmbed = new EmbedBuilder()
-                                .setTitle('🎊 Level Up!')
-                                .setDescription(`Congratulations <@${memberId}>! You've reached **Level ${newLevel}**!`)
-                                .addFields(
-                                    { name: 'Rank', value: medal, inline: true },
-                                    { name: 'Total XP', value: Math.floor(newTotalXP).toString(), inline: true }
-                                )
-                                .setColor(color)
-                                .setTimestamp();
-
-                            // Send to channel's built-in text chat
-                            await channel.send({ embeds: [levelUpEmbed] }).catch(err => {
-                                console.error(`Failed to send level-up message to ${channel.id}:`, err);
-                            });
-
-                            // Update notification status
-                            db.updateLastNotified(memberId, newLevel, now);
-                        }
-                    }
+            // Track levels before tick
+            const oldLevels = new Map();
+            for (const [userId, session] of xpManager.userSessions) {
+                if (!session.leaveTimestamp) {
+                    const user = db.getUser(userId);
+                    oldLevels.set(userId, user.level);
                 }
             }
-        } catch (error) {
-            console.error('Error in XP background task:', error);
-        }
-    }, 60000);
 
-    // Perform recovery routine to clean up dead or empty channels
-    console.log('Running recovery routine...');
+            await xpManager.tick(client, limiter);
+
+            // Check for level ups and achievements
+            for (const [userId, session] of xpManager.userSessions) {
+                if (session.leaveTimestamp) continue;
+
+                const user = db.getUser(userId);
+
+                // Achievement check
+                const othersInChannel = Array.from(xpManager.userSessions.values())
+                    .filter(s => s.channelId === session.channelId && s.userId !== userId && !s.leaveTimestamp);
+
+                await achievementManager.checkAchievements(userId, session, othersInChannel);
+
+                // Level up check
+                if (user.level > (oldLevels.get(userId) || 0)) {
+                    // Award "Buffer Overflow" achievement
+                    await achievementManager.awardAchievement(userId, 'buffer_overflow');
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('🎊 Level Up!')
+                        .setDescription(`Congratulations <@${userId}>! You've reached **Level ${user.level}**!`)
+                        .setColor(0xFFD700)
+                        .setTimestamp();
+
+                    await sendNotification(embed);
+
+                    // Also send to VC chat if it exists
+                    const vc = await client.channels.fetch(session.channelId).catch(() => null);
+                    if (vc) await limiter.execute(() => vc.send({ embeds: [embed] }).catch(() => {}));
+                }
+            }
+
+            const activeChannels = db.getAllChannels();
+            for (const record of activeChannels) {
+                const channel = await client.channels.fetch(record.voice_channel_id).catch(() => null);
+                if (channel) {
+                    await refreshControlPanel(channel);
+                }
+            }
+
+            achievementManager.checkResets();
+
+            const now = Date.now();
+            const cleanupDelayMs = (parseInt(process.env.EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES) || 0) * 60 * 1000;
+            for (const [channelId, emptySince] of emptyChannels) {
+                if (now - emptySince >= cleanupDelayMs) {
+                    const channel = await client.channels.fetch(channelId).catch(() => null);
+                    if (channel) {
+                        await limiter.execute(() => channel.delete('Empty for delay period'));
+                    }
+                    db.removeChannel(channelId);
+                    emptyChannels.delete(channelId);
+                }
+            }
+
+        } catch (error) {
+            console.error('Error in main tick loop:', error);
+        }
+    }, 10000);
+
     const CATEGORY_ID = process.env.CATEGORY_ID;
     const HUB_CHANNEL_ID = process.env.HUB_CHANNEL_ID;
 
     try {
-        // Fetch all channels in the guild to find channels in our category
         const category = await client.channels.fetch(CATEGORY_ID).catch(() => null);
         if (category && category.type === ChannelType.GuildCategory) {
             const guild = category.guild;
-
-            // Fetch all channels in the guild to ensure cache is populated
             await guild.channels.fetch();
-
-            // Get all channels that belong to this category
             const channelsInCategory = guild.channels.cache.filter(c => c.parentId === CATEGORY_ID);
 
             for (const [id, channel] of channelsInCategory) {
-                // Skip the Hub channel itself
                 if (id === HUB_CHANNEL_ID) continue;
-
-                // Only handle voice channels
                 if (channel.type !== ChannelType.GuildVoice) continue;
 
-                // Check if the channel is empty
-                // On startup, we ALWAYS delete empty rooms immediately regardless of cleanup delay
                 if (channel.members.size === 0) {
-                    console.log(`Deleting empty channel ${channel.name} (${id}) found in category during recovery.`);
-                    await channel.delete('Recovery: Channel was empty').catch(err => console.error(`Failed to delete ${id}:`, err));
+                    await limiter.execute(() => channel.delete('Recovery: Empty'));
                     db.removeChannel(id);
-                    emptyChannels.delete(id);
                 } else {
-                    console.log(`Channel ${channel.name} (${id}) is active with ${channel.members.size} members.`);
+                    for (const [memberId, member] of channel.members) {
+                        xpManager.updateUserPresence(memberId, id, member.voice.streaming);
+                    }
                 }
-            }
-        }
-
-        // Clean up any remaining database entries for channels that no longer exist
-        const savedChannels = db.getAllChannels();
-        for (const record of savedChannels) {
-            const channel = await client.channels.fetch(record.voice_channel_id).catch(() => null);
-            if (!channel) {
-                console.log(`Removing non-existent channel ${record.voice_channel_id} from DB.`);
-                db.removeChannel(record.voice_channel_id);
             }
         }
     } catch (error) {
-        console.error('Error during recovery routine:', error);
+        console.error('Error during recovery:', error);
     }
-    console.log('Recovery routine complete.');
 });
 
-// Event: Voice State Update (Joins, Leaves, Moves)
 client.on('voiceStateUpdate', async (oldState, newState) => {
-    // Get Hub and Category IDs from environment
     const HUB_CHANNEL_ID = process.env.HUB_CHANNEL_ID;
     const CATEGORY_ID = process.env.CATEGORY_ID;
 
-    // Check if a user joined the Hub channel
-    // We only trigger if the user was NOT previously in the Hub channel (prevents loops on mute/deafen)
     if (newState.channelId === HUB_CHANNEL_ID && oldState.channelId !== HUB_CHANNEL_ID) {
         try {
             const member = newState.member;
-            const guild = newState.guild;
-
-            // Create a new temporary voice channel
-            // We do not provide permissionOverwrites here to allow the channel
-            // to inherit permissions from the parent category as requested.
-            const voiceChannel = await guild.channels.create({
+            const voiceChannel = await limiter.execute(() => newState.guild.channels.create({
                 name: `${member.displayName}'s Room`,
                 type: ChannelType.GuildVoice,
                 parent: CATEGORY_ID
-            });
+            }));
 
-            // Move the user into their new channel
-            await member.voice.setChannel(voiceChannel);
+            await limiter.execute(() => member.voice.setChannel(voiceChannel));
 
-            // Create the Control Panel Embed
             const controlEmbed = new EmbedBuilder()
                 .setTitle('Voice Channel Control Panel')
-                .setDescription('Use the buttons below to manage your temporary voice channel.')
-                .setColor(0x00AE86)
-                .addFields(
-                    { name: 'Owner', value: `<@${member.id}>`, inline: true },
-                    { name: 'Channel', value: `${voiceChannel.name}`, inline: true }
-                );
+                .setDescription('Use the buttons below to manage your channel.')
+                .setColor(0x00AE86);
 
-            // Create first row of buttons: Edit Name and Set User Limit
-            const row1 = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('manage_name')
-                        .setLabel('Edit Name')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId('manage_limit')
-                        .setLabel('Set Limit')
-                        .setStyle(ButtonStyle.Primary)
-                );
+            const row1 = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('manage_limit').setLabel('Set Limit').setStyle(ButtonStyle.Primary)
+            );
 
-            // Create second row of buttons: Lock/Unlock (Join) and Hide/Show (Visibility)
-            const row2 = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('manage_privacy')
-                        .setLabel('Lock/Unlock')
-                        .setStyle(ButtonStyle.Secondary),
-                    new ButtonBuilder()
-                        .setCustomId('manage_visibility')
-                        .setLabel('Hide/Show')
-                        .setStyle(ButtonStyle.Secondary)
-                );
+            const row2 = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock/Unlock').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('manage_visibility').setLabel('Hide/Show').setStyle(ButtonStyle.Secondary)
+            );
 
-            // Send the control panel to the voice channel's built-in text chat
-            const controlMessage = await voiceChannel.send({
+            const controlMessage = await limiter.execute(() => voiceChannel.send({
                 embeds: [controlEmbed],
                 components: [row1, row2]
-            });
+            }));
 
-            // Pin the control panel message for easy access
-            // We wrap this in a try-catch because pinning might fail if permissions are missing
-            // or if the channel type doesn't support pinning (though GuildVoice built-in chat does)
-            try {
-                await controlMessage.pin();
-            } catch (pinError) {
-                console.warn(`Warning: Could not pin control message in ${voiceChannel.id}. This usually means "Pin Messages" or "Read Message History" permissions are missing.`, pinError.message);
-            }
-
-            // Save the channel data to the database
+            try { await limiter.execute(() => controlMessage.pin()); } catch (e) {}
             db.addChannel(voiceChannel.id, member.id, controlMessage.id);
-
+            xpManager.updateUserPresence(member.id, voiceChannel.id, false);
         } catch (error) {
-            // Log errors during channel creation with more context
-            if (error.code === 50013) {
-                console.error(`Error: Bot lacks permissions to create or manage channels in category ${CATEGORY_ID}. Please check "Manage Channels" and "Move Members" permissions.`);
-            } else {
-                console.error('Error creating temporary channel:', error);
-            }
+            console.error('Error creating room:', error);
         }
     }
 
-    // Check if a user left a temporary voice channel
+    if (newState.channelId && newState.channelId !== HUB_CHANNEL_ID && newState.channelId !== newState.guild.afkChannelId) {
+        xpManager.updateUserPresence(newState.id, newState.channelId, newState.streaming);
+        if (emptyChannels.has(newState.channelId)) emptyChannels.delete(newState.channelId);
+    }
+
     if (oldState.channelId && oldState.channelId !== newState.channelId) {
+        xpManager.handleUserLeave(oldState.id);
         const record = db.getChannel(oldState.channelId);
         if (record) {
             const channel = oldState.channel;
-            // If the channel is now empty, start the cleanup timer
             if (channel && channel.members.size === 0) {
-                const cleanupDelayMinutes = parseInt(process.env.EMPTY_CHANNEL_CLEANUP_DELAY_MINUTES) || 0;
-
-                if (cleanupDelayMinutes <= 0) {
-                    // Immediate cleanup if delay is 0 or less
-                    try {
-                        await channel.delete('Temporary channel empty');
-                        db.removeChannel(oldState.channelId);
-                        emptyChannels.delete(oldState.channelId);
-                        console.log(`Cleaned up empty channel immediately: ${oldState.channelId}`);
-                    } catch (error) {
-                        console.error(`Error deleting channel ${oldState.channelId}:`, error);
-                    }
-                } else {
-                    // Mark the time it became empty
-                    emptyChannels.set(oldState.channelId, Date.now());
-                    console.log(`Channel ${oldState.channelId} is empty. Will clean up in ${cleanupDelayMinutes} minutes.`);
-                }
+                emptyChannels.set(oldState.channelId, Date.now());
             }
-        }
-    }
-
-    // Check if a user joined a temporary voice channel that was pending cleanup
-    if (newState.channelId && newState.channelId !== oldState.channelId) {
-        if (emptyChannels.has(newState.channelId)) {
-            emptyChannels.delete(newState.channelId);
-            console.log(`User joined ${newState.channelId}. Aborting cleanup timer.`);
         }
     }
 });
 
-// Event: Interaction Create (Buttons, Menus, Modals)
 client.on('interactionCreate', async (interaction) => {
-    // Handle Button and Select Menu interactions
-    if (interaction.isButton() || interaction.isStringSelectMenu()) {
-        // Look up the channel record in the database
-        const record = db.getChannel(interaction.channelId);
+    if (interaction.isChatInputCommand()) {
+        await commands.handleInteraction(interaction, runRenderTask);
+        return;
+    }
 
-        // Check if the interaction is happening in a managed channel
+    if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.type === InteractionType.ModalSubmit) {
+        const record = db.getChannel(interaction.channelId);
         if (!record) return;
 
-        // Fetch the voice channel and check if the user is currently in it
         const channel = interaction.channel;
         const member = channel.members.get(interaction.user.id);
-
-        // Authorization: Only allow users currently in the voice channel to use the controls
-        if (!member) {
-            return interaction.reply({
-                content: 'You must be in the voice channel to use the controls.',
-                ephemeral: true
-            });
-        }
+        if (!member) return interaction.reply({ content: 'You must be in the voice channel.', ephemeral: true });
 
         const { customId } = interaction;
 
-        // Handle "Edit Name" button click
         if (customId === 'manage_name') {
-            // Create a modal for name input
-            const modal = new ModalBuilder()
-                .setCustomId('modal_name_change')
-                .setTitle('Change Channel Name');
-
-            const nameInput = new TextInputBuilder()
-                .setCustomId('new_name')
-                .setLabel('Enter new channel name:')
-                .setStyle(TextInputStyle.Short)
-                .setMinLength(1)
-                .setMaxLength(100)
-                .setPlaceholder('My Awesome Room')
-                .setRequired(true);
-
-            const firstActionRow = new ActionRowBuilder().addComponents(nameInput);
-            modal.addComponents(firstActionRow);
-
-            // Show the modal to the user
+            const modal = new ModalBuilder().setCustomId('modal_name_change').setTitle('Change Channel Name');
+            const nameInput = new TextInputBuilder().setCustomId('new_name').setLabel('Enter new name:').setStyle(TextInputStyle.Short).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
             await interaction.showModal(modal);
         }
 
-        // Handle "Lock/Unlock" button click (Privacy Toggle)
         if (customId === 'manage_privacy') {
-            try {
-                const channel = interaction.channel;
-                // Get current permission for @everyone role
-                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-
-                // Toggle between Locked (Connect: false) and Public (Connect: null/inherit)
-                const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-
-                if (isLocked) {
-                    // Unlock: Remove Connect denial
-                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-                        Connect: null
-                    });
-                    await interaction.reply({ content: `🔓 ${interaction.member.displayName} unlocked the channel (anyone can join).` });
-                } else {
-                    // Lock: Set Connect to false
-                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-                        Connect: false
-                    });
-                    await interaction.reply({ content: `🔒 ${interaction.member.displayName} locked the channel (joining restricted).` });
-                }
-                // Refresh the control panel embed to reflect changes
-                await refreshControlPanel(channel);
-            } catch (error) {
-                console.error('Error toggling privacy:', error);
-                await interaction.reply({ content: 'Failed to update privacy.', ephemeral: true });
-            }
+            const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+            const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
+            await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
+            await refreshControlPanel(channel);
         }
 
-        // Handle "Hide/Show" button click (Visibility Toggle)
         if (customId === 'manage_visibility') {
-            try {
-                const channel = interaction.channel;
-                // Get current permission for @everyone role
-                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-
-                // Toggle between Hidden (ViewChannel: false) and Visible (ViewChannel: null/inherit)
-                const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
-
-                if (isHidden) {
-                    // Show: Remove ViewChannel denial
-                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-                        ViewChannel: null
-                    });
-                    await interaction.reply({ content: `👁️ ${interaction.member.displayName} made the channel visible to everyone.` });
-                } else {
-                    // Hide: Set ViewChannel to false
-                    await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
-                        ViewChannel: false
-                    });
-                    await interaction.reply({ content: `👻 ${interaction.member.displayName} hid the channel from the channel list.` });
-                }
-                // Refresh the control panel embed to reflect changes
-                await refreshControlPanel(channel);
-            } catch (error) {
-                console.error('Error toggling visibility:', error);
-                await interaction.reply({ content: 'Failed to update visibility.', ephemeral: true });
-            }
+            const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+            const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: isHidden ? null : false }));
+            await interaction.reply({ content: `${isHidden ? '👁️' : '👻'} ${interaction.member.displayName} ${isHidden ? 'showed' : 'hid'} the channel.` });
+            await refreshControlPanel(channel);
         }
 
-        // Handle "Set User Limit" button click
         if (customId === 'manage_limit') {
-            // Create a modal for user limit input
-            const modal = new ModalBuilder()
-                .setCustomId('modal_limit_change')
-                .setTitle('Set User Limit');
-
-            const limitInput = new TextInputBuilder()
-                .setCustomId('user_limit')
-                .setLabel('Enter limit (0 for unlimited, max 99):')
-                .setStyle(TextInputStyle.Short)
-                .setMinLength(1)
-                .setMaxLength(2)
-                .setPlaceholder('0')
-                .setRequired(true);
-
-            const firstActionRow = new ActionRowBuilder().addComponents(limitInput);
-            modal.addComponents(firstActionRow);
-
-            // Show the modal to the user
+            const modal = new ModalBuilder().setCustomId('modal_limit_change').setTitle('Set User Limit');
+            const limitInput = new TextInputBuilder().setCustomId('user_limit').setLabel('Enter limit (0-99):').setStyle(TextInputStyle.Short).setRequired(true);
+            modal.addComponents(new ActionRowBuilder().addComponents(limitInput));
             await interaction.showModal(modal);
         }
-    }
 
-    // Handle Modal Submissions
-    if (interaction.type === InteractionType.ModalSubmit) {
-        // Authorization: Only allow users currently in the voice channel to submit modals
-        const channel = interaction.channel;
-        if (!channel.members.has(interaction.user.id)) {
-            return interaction.reply({
-                content: 'You must be in the voice channel to manage it.',
-                ephemeral: true
-            });
-        }
-
-        if (interaction.customId === 'modal_name_change') {
-            // Immediately defer the reply to prevent interaction timeout
-            // especially since setName() is subject to strict rate limits
-            await interaction.deferReply();
-
-            const newName = interaction.fields.getTextInputValue('new_name');
-            try {
-                // Update the channel name in Discord
-                await interaction.channel.setName(newName);
-                // Edit the deferred reply
-                await interaction.editReply({ content: `📝 ${interaction.member.displayName} renamed the channel to: **${newName}**` });
-                // Refresh the control panel embed to reflect changes
+        if (interaction.type === InteractionType.ModalSubmit) {
+            if (interaction.customId === 'modal_name_change') {
+                await interaction.deferReply();
+                const newName = interaction.fields.getTextInputValue('new_name');
+                await limiter.execute(() => interaction.channel.setName(newName));
+                await interaction.editReply({ content: `📝 Renamed to: **${newName}**` });
                 await refreshControlPanel(interaction.channel);
-            } catch (error) {
-                console.error('Error updating channel name:', error);
-                // Provide specific feedback for rate limits (common with setName)
-                const errorMsg = error.code === 50013 ? 'Missing permissions to rename channel.' :
-                                error.status === 429 ? 'Rate limited. Please wait a few minutes before renaming again.' :
-                                'Failed to update channel name.';
-
-                await interaction.editReply({ content: errorMsg });
             }
-        }
-
-        if (interaction.customId === 'modal_limit_change') {
-            await interaction.deferReply({ ephemeral: true });
-            const limitStr = interaction.fields.getTextInputValue('user_limit');
-            const limit = parseInt(limitStr);
-
-            if (isNaN(limit) || limit < 0 || limit > 99) {
-                return interaction.editReply({ content: 'Invalid limit. Please enter a number between 0 and 99.' });
-            }
-
-            try {
-                // Update the voice channel's user limit
-                await interaction.channel.setUserLimit(limit);
-                const limitText = limit === 0 ? 'unlimited' : `${limit} users`;
-                await interaction.editReply({ content: `👥 ${interaction.member.displayName} set the user limit to: **${limitText}**` });
-                // Refresh the control panel embed to reflect changes
+            if (interaction.customId === 'modal_limit_change') {
+                await interaction.deferReply({ ephemeral: true });
+                const limit = parseInt(interaction.fields.getTextInputValue('user_limit'));
+                if (isNaN(limit) || limit < 0 || limit > 99) return interaction.editReply({ content: 'Invalid limit.' });
+                await limiter.execute(() => interaction.channel.setUserLimit(limit));
+                await interaction.editReply({ content: `👥 Limit set to ${limit}.` });
                 await refreshControlPanel(interaction.channel);
-            } catch (error) {
-                console.error('Error setting user limit:', error);
-                const errorMsg = error.code === 50013 ? 'Missing permissions to set user limit.' : 'Failed to set user limit.';
-                await interaction.editReply({ content: errorMsg });
             }
         }
     }
 });
 
-// Login to Discord with the provided token
 client.login(process.env.DISCORD_TOKEN);
