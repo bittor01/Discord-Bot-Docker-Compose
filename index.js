@@ -295,23 +295,29 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             // Get the member who joined the hub.
             const member = newState.member;
             // Create a new voice channel within the configured category.
+            // We omit permissionOverwrites here to ensure the channel initially inherits
+            // all permissions (including the bot's access) from the parent category.
             const voiceChannel = await limiter.execute(() => newState.guild.channels.create({
                 name: `${member.displayName}'s Room`, // Default name based on member's display name.
                 type: ChannelType.GuildVoice,
-                parent: CATEGORY_ID,
-                // Apply initial permission overwrites to start the room in a 'Private' state.
-                permissionOverwrites: [
-                    {
-                        // Deny everyone from seeing or joining the channel by default.
-                        id: newState.guild.roles.everyone.id,
-                        deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect],
-                    },
-                    {
-                        // Explicitly allow the creator to see and join their own room.
-                        id: member.id,
-                        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect],
-                    },
-                ],
+                parent: CATEGORY_ID
+            }));
+
+            // Force a sync with the category permissions to be absolutely sure the bot
+            // and other administrative roles have the correct access.
+            await limiter.execute(() => voiceChannel.lockPermissions());
+
+            // Apply initial permission overrides to put the room in its starting 'Private' and 'Locked' state.
+            // We do this AFTER creation and syncing to avoid breaking the inheritance chain for the bot.
+            await limiter.execute(() => voiceChannel.permissionOverwrites.edit(newState.guild.roles.everyone, {
+                ViewChannel: false,
+                Connect: false
+            }));
+
+            // Explicitly allow the creator to see and join their own room.
+            await limiter.execute(() => voiceChannel.permissionOverwrites.edit(member.id, {
+                ViewChannel: true,
+                Connect: true
             }));
             // Move the creator into their newly created voice channel.
             await limiter.execute(() => member.voice.setChannel(voiceChannel));
