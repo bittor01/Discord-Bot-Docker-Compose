@@ -38,11 +38,13 @@ async function renderControlPanelImage(members) {
         // Draw Member Name
         ctx.fillStyle = '#ffffff';
         ctx.font = `bold 16px ${fontStack}`;
-        const nameText = m.name.length > 18 ? m.name.substring(0, 16) + '...' : m.name;
+        // Slightly more space for names
+        const nameText = m.name.length > 20 ? m.name.substring(0, 18) + '...' : m.name;
         ctx.fillText(nameText, padding + 35, y);
 
         // Define Bar Dimensions
-        const barX = padding + 190;
+        // Adjusted barX now that the "L" is gone and name is moved left
+        const barX = padding + 210;
         const barY = y - 20;
         const barWidth = 300;
         const barHeight = 24; // Taller bar for a "solid" feel

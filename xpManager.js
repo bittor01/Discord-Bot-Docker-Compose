@@ -104,8 +104,9 @@ async function calculateMultiplier(client, userId, channelMembers, limiter, guil
     }
 
     // 4. Combine with user's own acclimation
-    // Users start at 100% (1.0x) and gain more based on the group's acclimation.
-    const finalGroupMult = 1.0 + groupSum;
+    // Users start at 100% (1.0x) and gain more based on the group's acclimation
+    // as they themselves acclimate to the room.
+    const finalGroupMult = 1.0 + (member.acclimation * groupSum);
 
     // 5. Apply Voice State Modifiers (Mute/Deaf)
     let individualMult = 1.0;
