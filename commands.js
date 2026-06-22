@@ -73,14 +73,25 @@ async function handleInteraction(interaction, runRenderTask) {
         const userRecord = db.getUser(target.id);
         const achs = db.getUserAchievements(target.id);
 
-        const currentXPForLevel = xpManager.getXPForLevel(userRecord.level);
-        const nextXPForLevel = xpManager.getXPForLevel(userRecord.level + 1);
-        const xpProgress = (userRecord.xp - currentXPForLevel) / (nextXPForLevel - currentXPForLevel);
+        // Implement "Shortest Term Level" logic: Weekly > Monthly > Lifetime.
+        // We use the first period that has a non-zero level.
+        const period = userRecord.weekly_level > 0 ? 'weekly' : (userRecord.monthly_level > 0 ? 'monthly' : 'lifetime');
 
+        // Extract the level and current XP for the chosen period.
+        const displayLevel = period === 'weekly' ? userRecord.weekly_level : (period === 'monthly' ? userRecord.monthly_level : userRecord.level);
+        const displayXP = period === 'weekly' ? userRecord.weekly_xp : (period === 'monthly' ? userRecord.monthly_xp : userRecord.xp);
+
+        // Calculate XP progress to the next level for the selected period.
+        const currentXPForLevel = xpManager.getXPForLevel(displayLevel);
+        const nextXPForLevel = xpManager.getXPForLevel(displayLevel + 1);
+        const xpProgress = (displayXP - currentXPForLevel) / (nextXPForLevel - currentXPForLevel);
+
+        // Prepare data for the stats card renderer.
         const cardData = {
             username: target.username,
-            level: userRecord.level,
-            currentXP: Math.floor(userRecord.xp),
+            level: displayLevel,
+            period: period.charAt(0).toUpperCase() + period.slice(1), // Label like 'Weekly' or 'Lifetime'
+            currentXP: Math.floor(displayXP),
             neededXP: nextXPForLevel,
             xpProgress: Math.max(0, Math.min(1, xpProgress)),
             weeklyXP: Math.floor(userRecord.weekly_xp),

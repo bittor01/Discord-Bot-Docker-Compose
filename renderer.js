@@ -181,7 +181,14 @@ async function renderStatsCard(userData) {
     ctx.fillText(userData.username, 50, 80);
     ctx.fillStyle = '#ffd700';
     ctx.font = 'bold 60px sans-serif';
+    // Display the level from the chosen shortest-term period.
     ctx.fillText(`LVL ${userData.level}`, 50, 160);
+
+    // Draw the period label (e.g., "WEEKLY", "LIFETIME") to indicate which stats are shown.
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText(`${(userData.period || 'Lifetime').toUpperCase()} PROGRESS`, 50, 115);
+
     const barWidth = 700;
     const barHeight = 30;
     const barX = 50;
