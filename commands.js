@@ -86,9 +86,14 @@ async function handleInteraction(interaction, runRenderTask) {
         const nextXPForLevel = xpManager.getXPForLevel(displayLevel + 1);
         const xpProgress = (displayXP - currentXPForLevel) / (nextXPForLevel - currentXPForLevel);
 
+        // Attempt to fetch the GuildMember to get their server-specific nickname.
+        // If not found (e.g., they left), fallback to their global username.
+        const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+        const displayName = member ? member.displayName : target.username;
+
         // Prepare data for the stats card renderer.
         const cardData = {
-            username: target.username,
+            username: displayName,
             level: displayLevel,
             period: period.charAt(0).toUpperCase() + period.slice(1), // Label like 'Weekly' or 'Lifetime'
             currentXP: Math.floor(displayXP),
@@ -127,6 +132,9 @@ async function handleInteraction(interaction, runRenderTask) {
         }
 
         const top = db.getLeaderboard(period, 10);
+
+        // Build the leaderboard description using mentions for interactivity.
+        // Discord mentions will automatically resolve to nicknames in the client.
         let description = top.map((entry, i) => `${i+1}. <@${entry.user_id}> - Level ${entry.level} (${Math.floor(entry.xp).toLocaleString()} XP)`).join('\n');
 
         const embed = new EmbedBuilder()
