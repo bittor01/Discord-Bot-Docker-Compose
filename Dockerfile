@@ -12,7 +12,12 @@ RUN apk add --no-cache \
     jpeg-dev \
     pango-dev \
     giflib-dev \
-    librsvg-dev
+    librsvg-dev \
+    fontconfig \
+    ttf-dejavu \
+    font-noto \
+    font-noto-cjk \
+    font-noto-emoji
 
 # Set working directory
 WORKDIR /usr/src/app

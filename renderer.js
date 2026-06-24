@@ -4,37 +4,103 @@
 
 const { createCanvas, registerFont, loadImage } = require('canvas');
 
+/**
+ * Renders the control panel image showing members, their acclimation bars, and multipliers.
+ */
 async function renderControlPanelImage(members) {
-    const width = 600;
-    const rowHeight = 40;
-    const height = Math.max(100, members.length * rowHeight + 40);
+    // 1. Setup Canvas dimensions
+    // Width increased to 700 to accommodate longer names and the "LIVE" tag
+    const width = 700;
+    const rowHeight = 60; // Increased row height for better vertical spacing
+    const padding = 30;
+    const height = Math.max(120, members.length * rowHeight + 80);
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#2c2f33';
+
+    // 2. Draw Background
+    // Using a dark, professional Discord-style charcoal
+    ctx.fillStyle = '#23272a';
     ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 16px sans-serif';
-    ctx.fillText('Member Status & Acclimation', 20, 30);
+
+    // 3. Setup Font Stack
+    const fontStack = 'sans-serif, "Noto Sans", "DejaVu Sans", "Noto Color Emoji"';
+
+    // 4. Iterate through members and draw their status rows
     members.forEach((m, i) => {
-        const y = 60 + i * rowHeight;
+        const y = padding + 20 + i * rowHeight;
+
+        // Draw Level Number
+        ctx.fillStyle = '#faa61a'; // Gold/Yellow for levels
+        ctx.font = `bold 14px ${fontStack}`;
+        const levelText = `${m.level}`;
+        ctx.fillText(levelText, padding, y);
+
+        // Draw Member Name
         ctx.fillStyle = '#ffffff';
-        ctx.font = '14px sans-serif';
-        ctx.fillText(m.name.substring(0, 15), 20, y);
+        ctx.font = `bold 16px ${fontStack}`;
+        // Slightly more space for names
+        const nameText = m.name.length > 20 ? m.name.substring(0, 18) + '...' : m.name;
+        ctx.fillText(nameText, padding + 35, y);
+
+        // Define Bar Dimensions
+        // Adjusted barX now that the "L" is gone and name is moved left
+        const barX = padding + 210;
+        const barY = y - 20;
+        const barWidth = 300;
+        const barHeight = 24; // Taller bar for a "solid" feel
+
+        // Draw Bar Background (Gray track)
         ctx.fillStyle = '#4f545c';
-        ctx.fillRect(150, y - 12, 300, 15);
-        const gradient = ctx.createLinearGradient(150, 0, 450, 0);
-        gradient.addColorStop(0, '#43b581');
-        gradient.addColorStop(1, '#3ca374');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(150, y - 12, 300 * m.acclimation, 15);
+        ctx.beginPath();
+        ctx.roundRect(barX, barY, barWidth, barHeight, 4); // Rounded corners for modern look
+        ctx.fill();
+
+        // Draw XP Fill (Red -> Yellow -> Green based on progress)
+        if (m.progress > 0) {
+            let fillColor;
+            if (m.progress < 0.35) {
+                fillColor = '#ff4742'; // Red for low progress
+            } else if (m.progress < 0.75) {
+                fillColor = '#faa61a'; // Yellow/Orange for mid-range
+            } else {
+                fillColor = '#43b581'; // Green for high progress
+            }
+
+            ctx.fillStyle = fillColor;
+            ctx.beginPath();
+            // Ensure the fill also has rounded corners.
+            const fillWidth = Math.max(8, barWidth * m.progress);
+            ctx.roundRect(barX, barY, fillWidth, barHeight, 4);
+            ctx.fill();
+        }
+
+        // Draw ETA Text
         ctx.fillStyle = '#b9bbbe';
-        ctx.font = '12px sans-serif';
-        ctx.fillText(`${(m.multiplier || 1).toFixed(2)}x`, 460, y);
+        ctx.font = `bold 14px ${fontStack}`;
+        // Align ETA text clearly at the end of the bar
+        ctx.fillText(m.eta || 'N/A', barX + barWidth + 20, y);
+
+        // Draw "LIVE" tag if screensharing
+        // Replaces the "📺" emoji which often fails to render (showing squares) on Linux servers
         if (m.isSharing) {
-            ctx.fillStyle = '#ff73fa';
-            ctx.fillText('📺', 520, y);
+            const tagX = barX + barWidth + 65;
+            const tagY = y - 20;
+            const tagW = 45;
+            const tagH = 22;
+
+            ctx.fillStyle = '#ff73fa'; // Screenshare purple
+            ctx.beginPath();
+            ctx.roundRect(tagX, tagY, tagW, tagH, 3);
+            ctx.fill();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold 11px ${fontStack}`;
+            ctx.textAlign = 'center';
+            ctx.fillText('LIVE', tagX + tagW / 2, tagY + 15);
+            ctx.textAlign = 'left'; // Reset alignment
         }
     });
+
     return canvas.toBuffer('image/png');
 }
 

@@ -62,37 +62,107 @@ async function refreshControlPanel(channel) {
         const message = await limiter.execute(() => channel.messages.fetch(record.control_message_id).catch(() => null));
         if (!message) return;
 
-        const members = [];
+        // 1. Gather session and presence data for all members currently in the VC.
+        const membersData = [];
         const channelMembersArray = Array.from(channel.members.values());
         for (const member of channelMembersArray) {
-            const session = xpManager.userSessions.get(member.id) || { acclimation: 0, isSharing: false };
-            members.push({
+            // Retrieve their session (or create a temporary one if not yet tracked)
+            const session = xpManager.userSessions.get(member.id) || {
+                acclimation: 0,
+                isSharing: false,
+                sessionStartTimestamp: Date.now()
+            };
+            membersData.push({
+                userId: member.id,
                 name: member.displayName,
                 acclimation: session.acclimation,
                 isSharing: member.voice.streaming || session.isSharing,
-                multiplier: 1.0
+                sessionStartTimestamp: session.sessionStartTimestamp,
+                channelId: channel.id
             });
         }
 
-        const imageBuffer = await runRenderTask('controlPanel', members);
+        // 2. Sort members by "Seniority" (King of the Hill logic).
+        // Earliest joiners (lowest timestamp) appear at the top of the list.
+        membersData.sort((a, b) => a.sessionStartTimestamp - b.sessionStartTimestamp);
+
+        // 3. Calculate real-time XP multipliers and gather levels for each member to display in the UI.
+        const renderedMembers = [];
+        for (const mData of membersData) {
+            // Optimization: Since we already have the 'channel' object with its 'members' cache,
+            // we pass the GuildMember object directly to avoid redundant API calls.
+            const guildMember = channel.members.get(mData.userId);
+            const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
+
+            // Fetch the user's levels from the database.
+            const user = db.getUser(mData.userId) || { level: 0, weekly_level: 0, monthly_level: 0, xp: 0, weekly_xp: 0, monthly_xp: 0 };
+
+            // Logic for "shortest term level": Weekly > Monthly > Lifetime.
+            // If weekly level is enabled (non-zero), use it. Otherwise try monthly, then lifetime.
+            const p = user.weekly_level > 0 ? 'weekly' : (user.monthly_level > 0 ? 'monthly' : 'lifetime');
+            const displayLevel = p === 'weekly' ? user.weekly_level : (p === 'monthly' ? user.monthly_level : user.level);
+            const currentXP = p === 'weekly' ? user.weekly_xp : (p === 'monthly' ? user.monthly_xp : user.xp);
+
+            // Calculate progress to next level
+            const xpForCurrentLevel = xpManager.getXPForLevel(displayLevel);
+            const xpForNextLevel = xpManager.getXPForLevel(displayLevel + 1);
+            const progress = (currentXP - xpForCurrentLevel) / (xpForNextLevel - xpForCurrentLevel);
+
+            // Calculate "Time to Level" (TTL)
+            // XP_PER_SECOND is the base rate. We multiply by our real-time total multiplier.
+            const xpPerSec = parseFloat(process.env.XP_PER_SECOND) || 1;
+            const xpRemaining = xpForNextLevel - currentXP;
+            let eta = 'N/A';
+            if (mult > 0) {
+                const secondsRemaining = xpRemaining / (xpPerSec * mult);
+                const minutesRemaining = Math.ceil(secondsRemaining / 60);
+                if (minutesRemaining >= 60) {
+                    const hours = Math.floor(minutesRemaining / 60);
+                    const mins = minutesRemaining % 60;
+                    eta = `${hours}h ${mins}m`;
+                } else {
+                    eta = `${minutesRemaining}m`;
+                }
+            }
+
+            renderedMembers.push({
+                name: mData.name,
+                progress: Math.min(1.0, Math.max(0, progress)),
+                isSharing: mData.isSharing,
+                eta,
+                level: displayLevel
+            });
+        }
+
+        // 4. Generate the control panel image with sorted members and accurate multipliers.
+        const imageBuffer = await runRenderTask('controlPanel', renderedMembers);
         // Explicitly wrap in Buffer.from to fix ReqResourceType error
         const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { name: 'status.png' });
 
         const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
-        const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-        const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+        const isLocked = !!everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+        const isHidden = !!everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
 
         const updatedEmbed = new EmbedBuilder()
             .setTitle('Voice Channel Control Panel')
             .setColor(isLocked ? 0xff4742 : 0x00AE86)
             .addFields(
-                { name: 'Privacy', value: isLocked ? '🔒 Locked' : '🔓 Public', inline: true },
-                { name: 'Visibility', value: isHidden ? '👻 Hidden' : '👁️ Visible', inline: true }
+                { name: 'Room Access', value: isLocked ? '🔒 Locked' : '🔓 Open', inline: true },
+                { name: 'Discovery', value: isHidden ? '👻 Private' : '🌍 Public', inline: true }
             )
             .setImage('attachment://status.png')
             .setTimestamp();
 
-        await limiter.execute(() => message.edit({ embeds: [updatedEmbed], files: [attachment] }));
+        const row1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('manage_limit').setLabel('Set Limit').setStyle(ButtonStyle.Primary)
+        );
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('manage_privacy').setLabel(isLocked ? 'Unlock' : 'Lock').setStyle(isLocked ? ButtonStyle.Success : ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('manage_visibility').setLabel(isHidden ? 'Public' : 'Private').setStyle(isHidden ? ButtonStyle.Success : ButtonStyle.Secondary)
+        );
+
+        await limiter.execute(() => message.edit({ embeds: [updatedEmbed], files: [attachment], components: [row1, row2] }));
 
     } catch (error) {
         console.error(`Error refreshing control panel for ${channel.id}:`, error);
@@ -186,7 +256,9 @@ client.once(Events.ClientReady, async () => {
                 if (now - emptySince >= cleanupDelayMs) {
                     const channel = await client.channels.fetch(channelId).catch(() => null);
                     if (channel) {
-                        await limiter.execute(() => channel.delete('Empty cleanup'));
+                        await limiter.execute(() => channel.delete('Empty cleanup')).catch(err => {
+                            console.warn(`Failed to delete empty channel ${channelId}:`, err.message);
+                        });
                     }
                     db.removeChannel(channelId);
                     emptyChannels.delete(channelId);
@@ -211,7 +283,9 @@ client.once(Events.ClientReady, async () => {
                 if (id === HUB_CHANNEL_ID) continue;
                 if (channel.type !== ChannelType.GuildVoice) continue;
                 if (channel.members.size === 0) {
-                    await limiter.execute(() => channel.delete('Recovery'));
+                    await limiter.execute(() => channel.delete('Recovery')).catch(err => {
+                        console.warn(`Failed to delete recovery channel ${id}:`, err.message);
+                    });
                     db.removeChannel(id);
                 } else {
                     for (const [memberId, member] of channel.members) {
@@ -236,15 +310,23 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
                 type: ChannelType.GuildVoice,
                 parent: CATEGORY_ID
             }));
-            await limiter.execute(() => member.voice.setChannel(voiceChannel));
+            // Sync with category permissions first
+            try { await limiter.execute(() => voiceChannel.lockPermissions()); } catch (e) {}
+            // Then apply Private starting state
+            try { await limiter.execute(() => voiceChannel.permissionOverwrites.edit(newState.guild.roles.everyone, { ViewChannel: false })); } catch (e) {}
+
+            await limiter.execute(() => member.voice.setChannel(voiceChannel)).catch(error => {
+                console.error(`Failed to move member ${member.id} to new room:`, error);
+            });
             const controlEmbed = new EmbedBuilder().setTitle('Voice Channel Control Panel').setDescription('Manage your channel below.').setColor(0x00AE86);
             const row1 = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
                 new ButtonBuilder().setCustomId('manage_limit').setLabel('Set Limit').setStyle(ButtonStyle.Primary)
             );
+            // Default to 'Lock' and 'Hide' since rooms are public/visible by default
             const row2 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock/Unlock').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('manage_visibility').setLabel('Hide/Show').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('manage_visibility').setLabel('Hide').setStyle(ButtonStyle.Secondary)
             );
             const controlMessage = await limiter.execute(() => voiceChannel.send({ embeds: [controlEmbed], components: [row1, row2] }));
             try { await limiter.execute(() => controlMessage.pin()); } catch (e) {}
@@ -289,18 +371,55 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.showModal(modal);
         }
         if (customId === 'manage_privacy') {
-            const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-            const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
-            await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
-            await refreshControlPanel(channel);
+            try {
+                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+                const isLocked = !!everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+
+                if (!isLocked) {
+                    // LOCKING: Grant explicit Connect to everyone currently in the channel
+                    const memberIds = Array.from(channel.members.keys());
+                    for (const mId of memberIds) {
+                        await limiter.execute(() => channel.permissionOverwrites.edit(mId, { Connect: true }));
+                    }
+                    // Then deny for everyone else
+                    await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: false }));
+                } else {
+                    // UNLOCKING: Remove all explicit member overwrites for Connect
+                    const overwrites = Array.from(channel.permissionOverwrites.cache.values());
+                    for (const over of overwrites) {
+                        // Only remove user-specific overwrites, don't touch @everyone or role-based ones
+                        if (over.type === 1) { // 1 = Member
+                            await limiter.execute(() => channel.permissionOverwrites.delete(over.id));
+                        }
+                    }
+                    // Then clear the everyone deny
+                    await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: null }));
+                }
+
+                await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} **${isLocked ? 'Unlocked' : 'Locked'}** the channel.` });
+                await refreshControlPanel(channel);
+            } catch (err) {
+                console.error('Error toggling privacy:', err);
+                const content = err.code === 50013 ? '❌ I do not have permission to change channel permissions.' : '❌ An error occurred.';
+                await interaction.reply({ content, ephemeral: true }).catch(() => {});
+            }
         }
         if (customId === 'manage_visibility') {
-            const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-            const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: isHidden ? null : false }));
-            await interaction.reply({ content: `${isHidden ? '👁️' : '👻'} ${interaction.member.displayName} ${isHidden ? 'showed' : 'hid'} the channel.` });
-            await refreshControlPanel(channel);
+            try {
+                const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
+                const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+                // Toggle both visibility AND connect for @everyone when making public
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                    ViewChannel: isHidden ? null : false,
+                    Connect: isHidden ? null : false
+                }));
+                await interaction.reply({ content: `🌍 ${interaction.member.displayName} made the channel **${isHidden ? 'Public' : 'Private'}**.` });
+                await refreshControlPanel(channel);
+            } catch (err) {
+                console.error('Error toggling visibility:', err);
+                const content = err.code === 50013 ? '❌ I do not have permission to change channel permissions.' : '❌ An error occurred.';
+                await interaction.reply({ content, ephemeral: true }).catch(() => {});
+            }
         }
         if (customId === 'manage_limit') {
             const modal = new ModalBuilder().setCustomId('modal_limit_change').setTitle('Set User Limit');
