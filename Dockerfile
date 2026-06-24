@@ -1,8 +1,18 @@
 # Use Node.js 22 Alpine for a lightweight base image
 FROM node:22-alpine AS base
 
-# Install build dependencies for better-sqlite3 (requires python, make, g++)
-RUN apk add --no-cache python3 make g++
+# Install build dependencies for better-sqlite3 and node-canvas
+# Canvas on Alpine requires: build-base, g++, cairo-dev, jpeg-dev, pango-dev, giflib-dev
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    build-base \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    giflib-dev \
+    librsvg-dev
 
 # Set working directory
 WORKDIR /usr/src/app
