@@ -89,8 +89,15 @@ async function postAndPinLeaderboard(client, period, runRenderTask, limiter) {
 
     const entries = [];
     for (const entry of top) {
-        const user = await client.users.fetch(entry.user_id).catch(() => ({ username: 'Unknown User' }));
-        entries.push({ username: user.username, xp: entry.xp, level: entry.level });
+        // Attempt to fetch the member from the guild to get their server-specific nickname.
+        const member = await channel.guild.members.fetch(entry.user_id).catch(() => null);
+        // Fallback: If not in the server, fetch their global user object.
+        const user = !member ? await client.users.fetch(entry.user_id).catch(() => ({ username: 'Unknown User' })) : null;
+
+        // Use the nickname (displayName) if available, otherwise the username.
+        const displayName = member ? member.displayName : (user ? user.username : 'Unknown User');
+
+        entries.push({ username: displayName, xp: entry.xp, level: entry.level });
     }
 
     const buffer = await runRenderTask('leaderboard', { period, entries });

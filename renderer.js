@@ -15,9 +15,13 @@ async function renderControlPanelImage(members) {
     // 1. Setup Canvas dimensions
     // Width increased to 700 to accommodate longer names and the "LIVE" tag
     const width = 700;
-    const rowHeight = 60; // Increased row height for better vertical spacing
-    const padding = 30;
-    const height = Math.max(120, members.length * rowHeight + 80);
+    // Set rowHeight to 64px for a more substantial vertical presence for each member row.
+    const rowHeight = 64;
+    // Reduce padding to 10px for a clean look while still being close to the edges.
+    const padding = 10;
+    // Update the canvas height calculation to be more compact and fit the rows better.
+    // We use padding * 2 to account for top and bottom spacing.
+    const height = Math.max(80, members.length * rowHeight + padding * 2);
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
@@ -31,30 +35,48 @@ async function renderControlPanelImage(members) {
 
     // 4. Iterate through members and draw their status rows
     members.forEach((m, i) => {
-        // Vertical position for this member row
-        const y = padding + 20 + i * rowHeight;
+        // Set textBaseline to middle to enable precise vertical centering of all row elements.
+        ctx.textBaseline = 'middle';
+        // Calculate the vertical center point for each member row.
+        const rowCenterY = padding + (i * rowHeight) + (rowHeight / 2);
 
         // --- DRAW LEVEL ---
-        // Larger font for Level
+        // Increase font size for Level to bold 20px for better visibility.
         ctx.fillStyle = '#faa61a'; // Gold/Yellow for levels
-        ctx.font = `bold 18px ${fontStack}`;
+        ctx.font = `bold 20px ${fontStack}`;
         const levelText = `${m.level}`;
-        ctx.fillText(levelText, padding, y);
+        // Position Level text at the start of the row, vertically centered.
+        ctx.fillText(levelText, padding, rowCenterY);
 
         // --- DRAW NAME ---
-        // Larger font for Name
+        // Increase font size for Name to bold 22px for a more prominent look.
         ctx.fillStyle = '#ffffff';
-        ctx.font = `bold 20px ${fontStack}`;
-        // Truncate name slightly less as we have space
-        const nameText = m.name.length > 20 ? m.name.substring(0, 18) + '..' : m.name;
-        ctx.fillText(nameText, padding + 35, y);
+        ctx.font = `bold 22px ${fontStack}`;
+        // Position Name text next to the Level, ensuring enough space for 2-3 digit levels.
+        // We use X=48 to stay close to the edge.
+        const nameX = 48;
+        // Position the Progress Bar further right to give more room for the name.
+        const barX = 260;
+        // Calculate the maximum width for the name based on new positions.
+        const maxNameWidth = barX - nameX - 15;
+        let nameText = m.name;
+        // If the name is too wide, truncate it dynamically using measureText.
+        if (ctx.measureText(nameText).width > maxNameWidth) {
+            while (ctx.measureText(nameText + '..').width > maxNameWidth && nameText.length > 0) {
+                nameText = nameText.substring(0, nameText.length - 1);
+            }
+            nameText += '..';
+        }
+        // Draw the dynamically truncated name.
+        ctx.fillText(nameText, nameX, rowCenterY);
 
         // --- DRAW STUMPY XP BAR ---
-        // Wider bar to use more of the 700px width
-        const barX = padding + 220; // Adjusted for larger name space
-        const barY = y - 20;
-        const barWidth = 240; // Increased to use more space
-        const barHeight = 24; // Increased height
+        // Increase barHeight to 36px for a thick, modern feel.
+        const barHeight = 36;
+        // Center the bar vertically on the rowCenterY.
+        const barY = rowCenterY - (barHeight / 2);
+        // Set barWidth to 260px to balance name space and charm space on the 700px width.
+        const barWidth = 260;
 
         // Bar background
         ctx.fillStyle = '#4f545c';
@@ -73,10 +95,14 @@ async function renderControlPanelImage(members) {
         }
 
         // --- DRAW CHARMS / BUFFS ---
-        let charmX = barX + barWidth + 20; // More spacing after bar
-        const charmY = y - 20;
-        const charmSize = 24; // Increased charm size
-        const charmSpacing = 8; // More spacing between charms
+        // Start charms after the progress bar with a 15px buffer.
+        let charmX = barX + barWidth + 15;
+        // Set charm size to 28px to maintain a pleasing aspect ratio with the 36px bar.
+        const charmSize = 28;
+        // Center the charms vertically on the rowCenterY.
+        const charmY = rowCenterY - (charmSize / 2);
+        // Set charmSpacing to 4px for a compact layout.
+        const charmSpacing = 4;
 
         (m.buffs || []).forEach(buff => {
             // Use more vibrant colors ("pop") for the charms.
@@ -114,20 +140,24 @@ async function renderControlPanelImage(members) {
 
             // Draw white FontAwesome icon centered in the circle
             ctx.fillStyle = '#ffffff';
-            // Use FontAwesome family for the icon
-            ctx.font = `12px "FontAwesome"`;
+            // Set FontAwesome icon font size to 14px for better visibility within the 32px charm.
+            ctx.font = `14px "FontAwesome"`;
             ctx.textAlign = 'center';
-            ctx.fillText(icon, charmX + charmSize / 2, charmY + charmSize / 2 + 5);
+            // Draw the icon exactly in the center of the charm circle.
+            // Since we use textBaseline = 'middle', we just use the center coordinates.
+            ctx.fillText(icon, charmX + charmSize / 2, rowCenterY);
             ctx.textAlign = 'left';
 
+            // Increment the horizontal position for the next charm.
             charmX += charmSize + charmSpacing;
         });
 
         // --- DRAW MULTIPLIER ---
+        // Increase font size for the Multiplier to bold 18px.
         ctx.fillStyle = '#ffffff';
-        ctx.font = `bold 16px ${fontStack}`; // Larger multiplier font
-        // Position multiplier after the charms
-        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, charmX + 10, y);
+        ctx.font = `bold 18px ${fontStack}`;
+        // Position the Multiplier text 10px after the last charm, vertically centered.
+        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, charmX + 10, rowCenterY);
     });
 
     return canvas.toBuffer('image/png');
@@ -151,7 +181,14 @@ async function renderStatsCard(userData) {
     ctx.fillText(userData.username, 50, 80);
     ctx.fillStyle = '#ffd700';
     ctx.font = 'bold 60px sans-serif';
+    // Display the level from the chosen shortest-term period.
     ctx.fillText(`LVL ${userData.level}`, 50, 160);
+
+    // Draw the period label (e.g., "WEEKLY", "LIFETIME") to indicate which stats are shown.
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText(`${(userData.period || 'Lifetime').toUpperCase()} PROGRESS`, 50, 115);
+
     const barWidth = 700;
     const barHeight = 30;
     const barX = 50;
