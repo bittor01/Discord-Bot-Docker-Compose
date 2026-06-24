@@ -86,12 +86,54 @@ async function renderControlPanelImage(members) {
 
         // Bar fill progress
         if (m.progress > 0) {
-            let fillColor = m.progress < 0.35 ? '#ff4742' : (m.progress < 0.75 ? '#faa61a' : '#43b581');
-            ctx.fillStyle = fillColor;
-            ctx.beginPath();
             const fillWidth = Math.max(8, barWidth * m.progress);
+            let gradient = ctx.createLinearGradient(barX, barY, barX, barY + barHeight);
+
+            // Percentile-based metallic colors
+            // Platinum/Diamond: Top 10% (90+ percentile)
+            // Gold: Top 25% (75+ percentile)
+            // Silver: Top 50% (50+ percentile)
+            // Bronze: Rest
+            const p = m.percentile || 0;
+            if (p >= 90) {
+                // Platinum/Diamond
+                gradient.addColorStop(0, '#e5e4e2');
+                gradient.addColorStop(0.5, '#ffffff');
+                gradient.addColorStop(1, '#b4b4b4');
+            } else if (p >= 75) {
+                // Gold
+                gradient.addColorStop(0, '#ffd700');
+                gradient.addColorStop(0.5, '#fff7ae');
+                gradient.addColorStop(1, '#b8860b');
+            } else if (p >= 50) {
+                // Silver
+                gradient.addColorStop(0, '#c0c0c0');
+                gradient.addColorStop(0.5, '#e8e8e8');
+                gradient.addColorStop(1, '#808080');
+            } else {
+                // Bronze
+                gradient.addColorStop(0, '#cd7f32');
+                gradient.addColorStop(0.5, '#e3af66');
+                gradient.addColorStop(1, '#8b4513');
+            }
+
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
             ctx.roundRect(barX, barY, fillWidth, barHeight, 4);
             ctx.fill();
+
+            // Add metallic sheen/shine
+            const sheen = ctx.createLinearGradient(barX, barY, barX + fillWidth, barY);
+            sheen.addColorStop(0, 'rgba(255,255,255,0)');
+            sheen.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+            sheen.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = sheen;
+            ctx.fill();
+
+            // Add texture/inner shadow effect
+            ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(barX, barY, fillWidth, barHeight);
         }
 
         // --- DRAW CHARMS / BUFFS ---
@@ -132,11 +174,33 @@ async function renderControlPanelImage(members) {
                     break;
             }
 
-            // Draw vibrant charm circle
-            ctx.fillStyle = color;
+            // Draw vibrant charm circle with a subtle gradient and shadow
+            const charmGradient = ctx.createRadialGradient(
+                charmX + charmSize / 2, charmY + charmSize / 2, 0,
+                charmX + charmSize / 2, charmY + charmSize / 2, charmSize / 2
+            );
+            charmGradient.addColorStop(0, color);
+            charmGradient.addColorStop(1, 'rgba(0,0,0,0.3)');
+
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            ctx.shadowBlur = 4;
+            ctx.shadowOffsetX = 2;
+            ctx.shadowOffsetY = 2;
+
+            ctx.fillStyle = color; // Base color
             ctx.beginPath();
             ctx.arc(charmX + charmSize / 2, charmY + charmSize / 2, charmSize / 2, 0, Math.PI * 2);
             ctx.fill();
+
+            // Apply gradient overlay
+            ctx.fillStyle = charmGradient;
+            ctx.fill();
+
+            // Reset shadow for icon
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
 
             // Draw white FontAwesome icon centered in the circle
             ctx.fillStyle = '#ffffff';
@@ -173,21 +237,52 @@ async function renderStatsCard(userData) {
     bgGradient.addColorStop(1, '#2c2f33');
     ctx.fillStyle = bgGradient;
     ctx.fillRect(0, 0, width, height);
+
+    // Profile border
     ctx.strokeStyle = '#7289da';
-    ctx.lineWidth = 10;
-    ctx.strokeRect(5, 5, width - 10, height - 10);
+    ctx.lineWidth = 8;
+    ctx.strokeRect(4, 4, width - 8, height - 8);
+
+    // Avatar
+    const avatarSize = 120;
+    const avatarX = 50;
+    const avatarY = 50;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+    ctx.clip();
+    if (userData.avatarUrl) {
+        try {
+            const avatarImg = await loadImage(userData.avatarUrl);
+            ctx.drawImage(avatarImg, avatarX, avatarY, avatarSize, avatarSize);
+        } catch (e) {
+            ctx.fillStyle = '#4f545c';
+            ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize);
+        }
+    } else {
+        ctx.fillStyle = '#4f545c';
+        ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize);
+    }
+    ctx.restore();
+
+    // Avatar ring
+    ctx.strokeStyle = '#7289da';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 40px sans-serif';
-    ctx.fillText(userData.username, 50, 80);
+    ctx.fillText(userData.username, avatarX + avatarSize + 30, 95);
     ctx.fillStyle = '#ffd700';
     ctx.font = 'bold 60px sans-serif';
     // Display the level from the chosen shortest-term period.
-    ctx.fillText(`LVL ${userData.level}`, 50, 160);
+    ctx.fillText(`LVL ${userData.level}`, avatarX + avatarSize + 30, 165);
 
     // Draw the period label (e.g., "WEEKLY", "LIFETIME") to indicate which stats are shown.
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = '#7289da';
     ctx.font = 'bold 24px sans-serif';
-    ctx.fillText(`${(userData.period || 'Lifetime').toUpperCase()} PROGRESS`, 50, 115);
+    ctx.fillText(`${(userData.period || 'Lifetime').toUpperCase()} PROGRESS`, avatarX + avatarSize + 30, 115);
 
     const barWidth = 700;
     const barHeight = 30;
@@ -209,29 +304,125 @@ async function renderStatsCard(userData) {
 }
 
 async function renderLeaderboard(data) {
-    const width = 600;
-    const rowHeight = 60;
-    const height = 100 + data.entries.length * rowHeight;
+    const width = 700;
+    const rowHeight = 80;
+    const headerHeight = 120;
+    const padding = 20;
+    const height = headerHeight + data.entries.length * rowHeight + padding;
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#23272a';
+
+    // Background with subtle texture/gradient
+    const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+    bgGradient.addColorStop(0, '#2c2f33');
+    bgGradient.addColorStop(1, '#23272a');
+    ctx.fillStyle = bgGradient;
     ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = '#7289da';
-    ctx.font = 'bold 30px sans-serif';
-    ctx.fillText(`${data.period.toUpperCase()} LEADERBOARD`, 50, 60);
-    data.entries.forEach((e, i) => {
-        const y = 130 + i * rowHeight;
-        ctx.fillStyle = i < 3 ? '#ffd700' : '#ffffff';
+
+    // Header with metallic sheen
+    const headerGradient = ctx.createLinearGradient(0, 0, 0, headerHeight);
+    headerGradient.addColorStop(0, '#7289da');
+    headerGradient.addColorStop(0.5, '#99aab5');
+    headerGradient.addColorStop(1, '#7289da');
+    ctx.fillStyle = headerGradient;
+    ctx.font = 'bold 42px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 10;
+    ctx.fillText(`${data.period.toUpperCase()} HALL OF FAME`, width / 2, 75);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = 'left';
+
+    // Decorative line
+    ctx.strokeStyle = '#7289da';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(padding, headerHeight - 10);
+    ctx.lineTo(width - padding, headerHeight - 10);
+    ctx.stroke();
+
+    for (let i = 0; i < data.entries.length; i++) {
+        const e = data.entries[i];
+        const y = headerHeight + i * rowHeight + rowHeight / 2;
+        const rowY = headerHeight + i * rowHeight;
+
+        // Alternating row backgrounds
+        if (i % 2 === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.05)';
+            ctx.fillRect(padding, rowY, width - padding * 2, rowHeight);
+        }
+
+        // Rank with metallic color
+        let rankColor = '#ffffff';
+        if (i === 0) rankColor = '#ffd700'; // Gold
+        else if (i === 1) rankColor = '#c0c0c0'; // Silver
+        else if (i === 2) rankColor = '#cd7f32'; // Bronze
+
+        ctx.fillStyle = rankColor;
+        ctx.font = 'bold 32px sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${i + 1}`, padding + 10, y);
+
+        // Avatar
+        const avatarSize = 50;
+        const avatarX = padding + 60;
+        const avatarY = y - avatarSize / 2;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+
+        if (e.avatarUrl) {
+            try {
+                const avatarImg = await loadImage(e.avatarUrl);
+                ctx.drawImage(avatarImg, avatarX, avatarY, avatarSize, avatarSize);
+            } catch (err) {
+                // Fallback for failed avatar load
+                ctx.fillStyle = '#4f545c';
+                ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize);
+            }
+        } else {
+            ctx.fillStyle = '#4f545c';
+            ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize);
+        }
+        ctx.restore();
+
+        // Circular border for avatar
+        ctx.strokeStyle = rankColor;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Username
+        ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 24px sans-serif';
-        ctx.fillText(`${i + 1}.`, 30, y);
-        ctx.font = '20px sans-serif';
-        ctx.fillText(e.username.substring(0, 20), 80, y);
+        ctx.fillText(e.username.substring(0, 18), avatarX + avatarSize + 15, y);
+
+        // Stats with badge-like background
+        const statsX = width - 240;
+        const statsWidth = 220;
+        const statsHeight = 40;
+        const statsY = y - statsHeight / 2;
+
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.roundRect(statsX, statsY, statsWidth, statsHeight, 20);
+        ctx.fill();
+
+        ctx.fillStyle = rankColor;
+        ctx.font = 'bold 18px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(`LVL ${e.level}`, statsX + statsWidth - 15, y);
+
         ctx.fillStyle = '#b9bbbe';
         ctx.font = '16px sans-serif';
-        ctx.fillText(`LVL ${e.level} - ${Math.floor(e.xp).toLocaleString()} XP`, 350, y);
-        ctx.fillStyle = '#4f545c';
-        ctx.fillRect(80, y + 10, 480, 5);
-    });
+        ctx.textAlign = 'left';
+        ctx.fillText(`${Math.floor(e.xp).toLocaleString()} XP`, statsX + 15, y);
+    }
+
     return canvas.toBuffer('image/png');
 }
 
