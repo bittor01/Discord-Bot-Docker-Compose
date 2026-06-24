@@ -295,6 +295,19 @@ function getXPForLevel(level) {
     return total;
 }
 
+/**
+ * Determines the shortest enabled leaderboard term based on configuration.
+ * Priority: Weekly > Monthly > Lifetime.
+ */
+function getShortestPeriod() {
+    // Check if Weekly is enabled in the environment.
+    if (process.env.WEEKLY_LEADERBOARD_ENABLED === '1') return 'weekly';
+    // Check if Monthly is enabled.
+    if (process.env.MONTHLY_LEADERBOARD_ENABLED === '1') return 'monthly';
+    // Fallback to Lifetime.
+    return 'lifetime';
+}
+
 module.exports = {
     init,
     updateUserPresence,
@@ -303,6 +316,7 @@ module.exports = {
     calculateMultiplier,
     getLevelFromXP,
     getXPForLevel,
+    getShortestPeriod,
     awardXP,
     userSessions
 };

@@ -61,24 +61,42 @@ async function checkResets(client, runRenderTask, limiter) {
     const weeklyResetDay = parseInt(process.env.WEEKLY_RESET_DAY) || 0;
     const monthlyResetDay = parseInt(process.env.MONTHLY_RESET_DAY) || 1;
 
-    if (now.getDay() === weeklyResetDay && (now - lastWeekly > 24 * 60 * 60 * 1000)) {
-        if (process.env.WEEKLY_LEADERBOARD_ENABLED === '1') {
+    // Determine if resets should occur
+    const isWeeklyReset = now.getDay() === weeklyResetDay && (now - lastWeekly > 24 * 60 * 60 * 1000);
+    const isMonthlyReset = now.getDate() === monthlyResetDay && (now.getMonth() !== lastMonthly.getMonth() || now.getFullYear() !== lastMonthly.getFullYear());
+
+    if (isWeeklyReset || isMonthlyReset) {
+        console.log(`Triggering resets: Weekly=${isWeeklyReset}, Monthly=${isMonthlyReset}`);
+
+        // Post leaderboards according to priority
+        // If Weekly Reset: Post Weekly, Monthly (if enabled), and Lifetime
+        if (isWeeklyReset && process.env.WEEKLY_LEADERBOARD_ENABLED === '1') {
             await postAndPinLeaderboard(client, 'weekly', runRenderTask, limiter);
         }
-        console.log('Performing weekly reset...');
-        db.resetPeriodXP('weekly', now.getTime());
-    }
-    if (now.getDate() === monthlyResetDay && (now.getMonth() !== lastMonthly.getMonth() || now.getFullYear() !== lastMonthly.getFullYear())) {
-        if (process.env.MONTHLY_LEADERBOARD_ENABLED === '1') {
+
+        // If either Weekly or Monthly Reset: Post Monthly (if enabled)
+        if ((isWeeklyReset || isMonthlyReset) && process.env.MONTHLY_LEADERBOARD_ENABLED === '1') {
             await postAndPinLeaderboard(client, 'monthly', runRenderTask, limiter);
         }
-        console.log('Performing monthly reset...');
-        db.resetPeriodXP('monthly', now.getTime());
+
+        // Always post Lifetime on any reset
+        await postAndPinLeaderboard(client, 'lifetime', runRenderTask, limiter);
+
+        // Perform actual database resets after posting
+        if (isWeeklyReset) {
+            console.log('Performing weekly database reset...');
+            db.resetPeriodXP('weekly', now.getTime());
+        }
+        if (isMonthlyReset) {
+            console.log('Performing monthly database reset...');
+            db.resetPeriodXP('monthly', now.getTime());
+        }
     }
 }
 
 async function postAndPinLeaderboard(client, period, runRenderTask, limiter) {
-    const channelId = process.env[`${period.toUpperCase()}_LEADERBOARD_CHANNEL_ID`];
+    const envKey = period === 'lifetime' ? 'LIFETIME_LEADERBOARD_CHANNEL_ID' : `${period.toUpperCase()}_LEADERBOARD_CHANNEL_ID`;
+    const channelId = process.env[envKey];
     if (!channelId) return;
 
     const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -89,20 +107,28 @@ async function postAndPinLeaderboard(client, period, runRenderTask, limiter) {
 
     const entries = [];
     for (const entry of top) {
-        // Attempt to fetch the member from the guild to get their server-specific nickname.
+        // Attempt to fetch the member from the guild to get their server-specific nickname and avatar.
         const member = await channel.guild.members.fetch(entry.user_id).catch(() => null);
-        // Fallback: If not in the server, fetch their global user object.
-        const user = !member ? await client.users.fetch(entry.user_id).catch(() => ({ username: 'Unknown User' })) : null;
+        let displayName = 'Unknown User';
+        let avatarUrl = null;
 
-        // Use the nickname (displayName) if available, otherwise the username.
-        const displayName = member ? member.displayName : (user ? user.username : 'Unknown User');
+        if (member) {
+            displayName = member.displayName;
+            avatarUrl = member.displayAvatarURL({ extension: 'png', size: 64 });
+        } else {
+            const user = await client.users.fetch(entry.user_id).catch(() => null);
+            if (user) {
+                displayName = user.username;
+                avatarUrl = user.displayAvatarURL({ extension: 'png', size: 64 });
+            }
+        }
 
-        entries.push({ username: displayName, xp: entry.xp, level: entry.level });
+        entries.push({ username: displayName, xp: entry.xp, level: entry.level, avatarUrl });
     }
 
     const buffer = await runRenderTask('leaderboard', { period, entries });
     // Explicitly wrap in Buffer.from to ensure compatibility with Discord.js v14
-    const attachment = new AttachmentBuilder(Buffer.from(buffer), { name: 'leaderboard.png' });
+    const attachment = new AttachmentBuilder(Buffer.from(buffer), { name: `leaderboard_${period}.png` });
 
     const message = await limiter.execute(() => channel.send({
         content: `🏆 **${period.toUpperCase()} HALL OF FAME** 🏆`,
@@ -110,17 +136,17 @@ async function postAndPinLeaderboard(client, period, runRenderTask, limiter) {
     }));
 
     try {
-        // Unpin previous leaderboard messages
+        // Unpin previous leaderboard messages for this period
         const pinned = await limiter.execute(() => channel.messages.fetchPinned());
         for (const msg of pinned.values()) {
-            if (msg.author.id === client.user.id && msg.content.includes('HALL OF FAME')) {
+            if (msg.author.id === client.user.id && msg.content.includes(`${period.toUpperCase()} HALL OF FAME`)) {
                 await limiter.execute(() => msg.unpin());
             }
         }
         // Pin the new one
         await limiter.execute(() => message.pin());
     } catch (err) {
-        console.error(`Failed to manage pins in ${channelId}:`, err);
+        console.error(`Failed to manage pins for ${period} in ${channelId}:`, err);
     }
 }
 

@@ -94,6 +94,7 @@ async function handleInteraction(interaction, runRenderTask) {
         // Prepare data for the stats card renderer.
         const cardData = {
             username: displayName,
+            avatarUrl: target.displayAvatarURL({ extension: 'png', size: 128 }),
             level: displayLevel,
             period: period.charAt(0).toUpperCase() + period.slice(1), // Label like 'Weekly' or 'Lifetime'
             currentXP: Math.floor(displayXP),

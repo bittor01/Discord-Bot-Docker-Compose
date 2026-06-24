@@ -97,11 +97,11 @@ async function refreshControlPanel(channel) {
             // Fetch the user's levels from the database.
             const user = db.getUser(mData.userId) || { level: 0, weekly_level: 0, monthly_level: 0, xp: 0, weekly_xp: 0, monthly_xp: 0 };
 
-            // Logic for "shortest term level": Weekly > Monthly > Lifetime.
-            // If weekly level is enabled (non-zero), use it. Otherwise try monthly, then lifetime.
-            const p = user.weekly_level > 0 ? 'weekly' : (user.monthly_level > 0 ? 'monthly' : 'lifetime');
+            // Logic for "shortest term level": Weekly > Monthly > Lifetime based on enabled leaderboards.
+            const p = xpManager.getShortestPeriod();
             const displayLevel = p === 'weekly' ? user.weekly_level : (p === 'monthly' ? user.monthly_level : user.level);
             const currentXP = p === 'weekly' ? user.weekly_xp : (p === 'monthly' ? user.monthly_xp : user.xp);
+            const percentile = db.getUserPercentile(mData.userId, p);
 
             // Calculate progress to next level
             const xpForCurrentLevel = xpManager.getXPForLevel(displayLevel);
@@ -114,7 +114,8 @@ async function refreshControlPanel(channel) {
                 isSharing: mData.isSharing,
                 multiplier: multData.total,
                 buffs: multData.buffs,
-                level: displayLevel
+                level: displayLevel,
+                percentile: percentile
             });
         }
 
@@ -211,6 +212,7 @@ client.once(Events.ClientReady, async () => {
                 }
 
                 const periods = ['lifetime', 'weekly', 'monthly'];
+                const shortestPeriod = xpManager.getShortestPeriod();
                 for (const p of periods) {
                     const currentLevel = p === 'lifetime' ? user.level : (p === 'weekly' ? user.weekly_level : user.monthly_level);
                     if (currentLevel > old[p]) {
@@ -222,9 +224,11 @@ client.once(Events.ClientReady, async () => {
                             .setColor(p === 'weekly' ? 0x7289da : (p === 'monthly' ? 0xff73fa : 0xFFD700))
                             .setTimestamp();
 
+                        // Always send notification to the respective leaderboard/output channel.
                         await sendNotification(p, lvlEmbed);
 
-                        if (p === 'lifetime') {
+                        // Only send level-up notification to the voice channel text chat if it's the shortest enabled term.
+                        if (p === shortestPeriod) {
                             const vc = await client.channels.fetch(session.channelId).catch(() => null);
                             if (vc) await limiter.execute(() => vc.send({ embeds: [lvlEmbed] }).catch(() => {}));
                         }
