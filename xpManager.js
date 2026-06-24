@@ -4,6 +4,7 @@
  */
 
 const db = require('./database');
+const { PermissionFlagsBits } = require('discord.js');
 
 const ACCLIMATION_TIME_MS = (parseInt(process.env.ACCLIMATION_TIME_MINUTES) || 15) * 60 * 1000;
 const GRACE_PERIOD_MS = (parseFloat(process.env.ACCLIMATION_GRACE_PERIOD_MINUTES) || 7.5) * 60 * 1000;
@@ -127,8 +128,32 @@ async function calculateMultiplier(client, userId, channelMembers, limiter, guil
     // Users sharing their screen get a boost (e.g., 1.5x)
     if (member.isSharing) individualMult *= XP_SCREENSHARE_MULT;
 
-    // Return the final combined multiplier
-    return finalGroupMult * individualMult;
+    // 7. Identify all active "Buffs" or "Modifiers" affecting the rate.
+    const buffs = [];
+
+    // Group Bonus
+    if (groupSum > 0) buffs.push({ id: 'group', value: groupSum, type: 'buff' });
+
+    // Acclimation (if not at 100%, it's effectively a penalty/ramp)
+    if (member.acclimation < 1.0) buffs.push({ id: 'acclimation', value: member.acclimation, type: 'neutral' });
+
+    // Screenshare Bonus
+    if (member.isSharing) buffs.push({ id: 'sharing', value: XP_SCREENSHARE_MULT, type: 'buff' });
+
+    // Voice State Penalties
+    if (guildMember) {
+        if (guildMember.voice.deaf || guildMember.voice.selfDeaf) {
+            buffs.push({ id: 'deaf', value: (parseFloat(process.env.XP_MULTIPLIER_DEAFENED) || 0.1), type: 'debuff' });
+        } else if (guildMember.voice.mute || guildMember.voice.selfMute) {
+            buffs.push({ id: 'mute', value: (parseFloat(process.env.XP_MULTIPLIER_MUTED) || 0.5), type: 'debuff' });
+        }
+    }
+
+    // Return the final combined multiplier and the list of active charms.
+    return {
+        total: finalGroupMult * individualMult,
+        buffs
+    };
 }
 
 async function tick(client, limiter) {
@@ -144,6 +169,29 @@ async function tick(client, limiter) {
 
             // If they've been gone past the grace period, wipe the session
             if (awayTime > gracePeriodHold + gracePeriodDecay) {
+                // If the channel was Locked or Private, we need to remove their permission overwrite
+                // to prevent them from re-joining now that their session/acclimation has expired.
+                const channel = await limiter.execute(() => client.channels.fetch(session.channelId).catch(() => null));
+                if (channel) {
+                    // Find the user's specific overwrite in this channel.
+                    const overwrite = channel.permissionOverwrites.cache.get(userId);
+                    if (overwrite) {
+                        // We remove the user's specific override if the channel is currently
+                        // either Locked (Connect denied) or Private (ViewChannel denied).
+                        // This enforces the rule that they lose their "spot" in restricted rooms
+                        // once their session/acclimation has fully decayed.
+                        const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
+                        const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
+                        const isPrivate = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+
+                        if (isLocked || isPrivate) {
+                            // Delete the overwrite to revoke their explicit Connect/ViewChannel permissions.
+                            await limiter.execute(() => overwrite.delete());
+                        }
+                    }
+                }
+
+                // Remove from memory and database.
                 userSessions.delete(userId);
                 db.clearSession(userId);
                 continue;
@@ -188,10 +236,10 @@ async function tick(client, limiter) {
             const guildMember = channel?.members.get(member.userId);
 
             // Calculate real-time multiplier using the extracted function (passing the pre-fetched member)
-            const totalMultiplier = await calculateMultiplier(client, member.userId, members, limiter, guildMember);
+            const multData = await calculateMultiplier(client, member.userId, members, limiter, guildMember);
 
             // Calculate XP gain (Base * Time * Multiplier)
-            const xpGain = XP_PER_SECOND * (TICK_INTERVAL_MS / 1000) * totalMultiplier;
+            const xpGain = XP_PER_SECOND * (TICK_INTERVAL_MS / 1000) * multData.total;
 
             if (xpGain > 0) {
                 awardXP(member.userId, xpGain);

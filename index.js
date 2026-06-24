@@ -92,7 +92,7 @@ async function refreshControlPanel(channel) {
             // Optimization: Since we already have the 'channel' object with its 'members' cache,
             // we pass the GuildMember object directly to avoid redundant API calls.
             const guildMember = channel.members.get(mData.userId);
-            const mult = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
+            const multData = await xpManager.calculateMultiplier(client, mData.userId, membersData, limiter, guildMember);
 
             // Fetch the user's levels from the database.
             const user = db.getUser(mData.userId) || { level: 0, weekly_level: 0, monthly_level: 0, xp: 0, weekly_xp: 0, monthly_xp: 0 };
@@ -112,7 +112,8 @@ async function refreshControlPanel(channel) {
                 name: mData.name,
                 progress: Math.min(1.0, Math.max(0, progress)),
                 isSharing: mData.isSharing,
-                multiplier: mult,
+                multiplier: multData.total,
+                buffs: multData.buffs,
                 level: displayLevel
             });
         }
@@ -122,21 +123,38 @@ async function refreshControlPanel(channel) {
         // Explicitly wrap in Buffer.from to fix ReqResourceType error
         const attachment = new AttachmentBuilder(Buffer.from(imageBuffer), { name: 'status.png' });
 
+        // 5. Determine the current Privacy (Locked) and Visibility (Private) states for the UI.
         const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
         const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-        const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+        const isPrivate = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
 
+        // 6. Build the updated embed reflecting the current status.
         const updatedEmbed = new EmbedBuilder()
             .setTitle('Voice Channel Control Panel')
             .setColor(isLocked ? 0xff4742 : 0x00AE86)
             .addFields(
-                { name: 'Privacy', value: isLocked ? '🔒 Locked' : '🔓 Public', inline: true },
-                { name: 'Visibility', value: isHidden ? '👻 Hidden' : '👁️ Visible', inline: true }
+                { name: 'Locking', value: isLocked ? '🔒 Locked' : '🔓 Unlocked', inline: true },
+                { name: 'Visibility', value: isPrivate ? '👻 Private' : '👁️ Public', inline: true }
             )
             .setImage('attachment://status.png')
             .setTimestamp();
 
-        await limiter.execute(() => message.edit({ embeds: [updatedEmbed], files: [attachment] }));
+        // 7. Update the control panel buttons to show the *action* (the opposite of the current state).
+        const row1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('manage_limit').setLabel('Set Limit').setStyle(ButtonStyle.Primary)
+        );
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('manage_privacy').setLabel(isLocked ? 'Unlock' : 'Lock').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('manage_visibility').setLabel(isPrivate ? 'Public' : 'Private').setStyle(ButtonStyle.Secondary)
+        );
+
+        // 8. Edit the control message with the new embed, sorted member image, and updated buttons.
+        await limiter.execute(() => message.edit({
+            embeds: [updatedEmbed],
+            files: [attachment],
+            components: [row1, row2]
+        }));
 
     } catch (error) {
         console.error(`Error refreshing control panel for ${channel.id}:`, error);
@@ -272,23 +290,54 @@ client.once(Events.ClientReady, async () => {
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const HUB_CHANNEL_ID = process.env.HUB_CHANNEL_ID;
     const CATEGORY_ID = process.env.CATEGORY_ID;
+    // Handle user joining the Hub channel to create a new room.
     if (newState.channelId === HUB_CHANNEL_ID && oldState.channelId !== HUB_CHANNEL_ID) {
         try {
+            // Get the member who joined the hub.
             const member = newState.member;
+            // Create a new voice channel within the configured category.
+            // We omit permissionOverwrites here to ensure the channel initially inherits
+            // all permissions (including the bot's access) from the parent category.
             const voiceChannel = await limiter.execute(() => newState.guild.channels.create({
-                name: `${member.displayName}'s Room`,
+                name: `${member.displayName}'s Room`, // Default name based on member's display name.
                 type: ChannelType.GuildVoice,
                 parent: CATEGORY_ID
             }));
+
+            // Force a sync with the category permissions to be absolutely sure the bot
+            // and other administrative roles have the correct access.
+            await limiter.execute(() => voiceChannel.lockPermissions());
+
+            // Apply initial permission overrides to put the room in its starting 'Private' but 'Unlocked' state.
+            // We do this AFTER creation and syncing to avoid breaking the inheritance chain for the bot.
+            await limiter.execute(() => voiceChannel.permissionOverwrites.edit(newState.guild.roles.everyone, {
+                ViewChannel: false, // Start as Private (Hidden from others).
+                Connect: null      // Start as Unlocked (Anyone who can see it can join).
+            }));
+
+            // Explicitly allow the creator to see the room since we just hid it from @everyone.
+            await limiter.execute(() => voiceChannel.permissionOverwrites.edit(member.id, {
+                ViewChannel: true
+            }));
+            // Move the creator into their newly created voice channel.
             await limiter.execute(() => member.voice.setChannel(voiceChannel));
-            const controlEmbed = new EmbedBuilder().setTitle('Voice Channel Control Panel').setDescription('Manage your channel below.').setColor(0x00AE86);
+            // Create the initial control panel embed.
+            const controlEmbed = new EmbedBuilder()
+                .setTitle('Voice Channel Control Panel')
+                .setDescription('Manage your channel below.')
+                .setColor(0x00AE86);
+
+            // Row 1: Generic channel settings (Name and Limit).
             const row1 = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('manage_name').setLabel('Edit Name').setStyle(ButtonStyle.Primary),
                 new ButtonBuilder().setCustomId('manage_limit').setLabel('Set Limit').setStyle(ButtonStyle.Primary)
             );
+
+            // Row 2: Privacy and Visibility toggles.
+            // Rooms start Unlocked and Private. We show 'Lock' and 'Public' as the available actions.
             const row2 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock/Unlock').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('manage_visibility').setLabel('Hide/Show').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('manage_privacy').setLabel('Lock').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('manage_visibility').setLabel('Public').setStyle(ButtonStyle.Secondary)
             );
             const controlMessage = await limiter.execute(() => voiceChannel.send({ embeds: [controlEmbed], components: [row1, row2] }));
             try { await limiter.execute(() => controlMessage.pin()); } catch (e) {}
@@ -332,18 +381,117 @@ client.on('interactionCreate', async (interaction) => {
             modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
             await interaction.showModal(modal);
         }
+        // Handle the 'Lock/Unlock' toggle button.
         if (customId === 'manage_privacy') {
+            // Check if the channel is currently locked for @everyone.
             const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
             const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { Connect: isLocked ? null : false }));
-            await interaction.reply({ content: `${isLocked ? '🔓' : '🔒'} ${interaction.member.displayName} ${isLocked ? 'unlocked' : 'locked'} the channel.` });
+
+            if (!isLocked) {
+                // ACTION: LOCK THE CHANNEL
+                // 1. Snapshot all current members and grant them explicit Connect permission.
+                // This ensures those already inside can stay or rejoin if they leave temporarily.
+                const members = Array.from(channel.members.values());
+                for (const m of members) {
+                    await limiter.execute(() => channel.permissionOverwrites.edit(m.id, {
+                        Connect: true
+                    }));
+                }
+
+                // 2. Deny Connect permission for @everyone to prevent new people from joining.
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                    Connect: false
+                }));
+
+                await interaction.reply({
+                    content: `🔒 **${interaction.member.displayName}** locked the channel. New members cannot join.`
+                });
+            } else {
+                // ACTION: UNLOCK THE CHANNEL
+                // 1. Remove @everyone's Connect denial.
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                    Connect: null
+                }));
+
+                // 2. Cleanup: Remove specific Connect overrides for all users to keep the permission list clean.
+                // We fetch the current overwrites and filter for Member-type ones.
+                const userOverwrites = channel.permissionOverwrites.cache.filter(o => o.type === 1); // 1 = Member
+                for (const [id, overwrite] of userOverwrites) {
+                    // We only remove it if it was specifically a Connect:true override.
+                    if (overwrite.allow.has(PermissionFlagsBits.Connect)) {
+                        // If they don't have other special permissions (like ViewChannel from Private state), delete the override.
+                        // ViewChannel check will be handled by the Visibility toggle logic.
+                        if (overwrite.allow.toArray().length === 1) {
+                            await limiter.execute(() => overwrite.delete());
+                        } else {
+                            // Otherwise just remove the Connect allow part.
+                            await limiter.execute(() => channel.permissionOverwrites.edit(id, { Connect: null }));
+                        }
+                    }
+                }
+
+                await interaction.reply({
+                    content: `🔓 **${interaction.member.displayName}** unlocked the channel. Anyone can join.`
+                });
+            }
+
+            // Refresh the UI to show the new state.
             await refreshControlPanel(channel);
         }
+        // Handle the 'Public/Private' toggle button (Visibility).
         if (customId === 'manage_visibility') {
+            // Check if the channel is currently Private (ViewChannel denied for @everyone).
             const everyoneOverwrites = channel.permissionOverwrites.cache.get(interaction.guild.roles.everyone.id);
-            const isHidden = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
-            await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { ViewChannel: isHidden ? null : false }));
-            await interaction.reply({ content: `${isHidden ? '👁️' : '👻'} ${interaction.member.displayName} ${isHidden ? 'showed' : 'hid'} the channel.` });
+            const isPrivate = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
+
+            if (!isPrivate) {
+                // ACTION: MAKE PRIVATE
+                // 1. Snapshot all current members and grant them explicit ViewChannel permission.
+                const members = Array.from(channel.members.values());
+                for (const m of members) {
+                    await limiter.execute(() => channel.permissionOverwrites.edit(m.id, {
+                        ViewChannel: true
+                    }));
+                }
+
+                // 2. Deny ViewChannel for @everyone.
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                    ViewChannel: false
+                }));
+
+                await interaction.reply({
+                    content: `👻 **${interaction.member.displayName}** made the channel private. It is now hidden from the public.`
+                });
+            } else {
+                // ACTION: MAKE PUBLIC
+                // 1. Remove @everyone's ViewChannel denial.
+                await limiter.execute(() => channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                    ViewChannel: null
+                }));
+
+                // 2. Cleanup: Remove specific ViewChannel overrides for all users.
+                const userOverwrites = channel.permissionOverwrites.cache.filter(o => o.type === 1);
+                for (const [id, overwrite] of userOverwrites) {
+                    // Remove ViewChannel allowance.
+                    if (overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
+                        // If they don't have other special permissions (like Connect from Lock state), delete the whole override.
+                        if (overwrite.allow.toArray().length === 1) {
+                            await limiter.execute(() => overwrite.delete());
+                        } else {
+                            // Otherwise just remove ViewChannel.
+                            await limiter.execute(() => channel.permissionOverwrites.edit(id, {
+                                ViewChannel: null
+                            }));
+                        }
+                    }
+                }
+
+                await interaction.reply({
+                    content: `👁️ **${interaction.member.displayName}** made the channel public. It is now visible to everyone.`
+                });
+            }
+
+            // Refresh the UI to show the new state.
             await refreshControlPanel(channel);
         }
         if (customId === 'manage_limit') {

@@ -46,3 +46,9 @@ Table: `session_state`
 - `/stats [user]`: View level and XP card.
 - `/leaderboard [period]`: View top players.
 - `/givexp`, `/giveachievement`, `/resetuser`: Admin commands restricted by role.
+
+## Permission Logic
+- **Default State**: New channels are created in a **Private** but **Unlocked** state. `@everyone` is denied `ViewChannel`. The creator is granted explicit `ViewChannel` permission.
+- **Locking**: Snapshots current members and grants them explicit `Connect` permission, then denies `Connect` to `@everyone`. This prevents new members from joining. Unlocking clears these overrides.
+- **Privacy (Visibility)**: Snapshots current members and grants them explicit `ViewChannel`, then denies `ViewChannel` to `@everyone`. Making Public clears these overrides.
+- **Re-entry Restriction**: If a user's session expires (after the grace/decay period) while their channel is Locked or Private, their explicit permission overwrite is deleted to prevent them from re-joining.

@@ -3,6 +3,10 @@
  */
 
 const { createCanvas, registerFont, loadImage } = require('canvas');
+const path = require('path');
+
+// Register FontAwesome for icons in the status charms
+registerFont(path.join(__dirname, 'node_modules/@fortawesome/fontawesome-free/webfonts/fa-solid-900.ttf'), { family: 'FontAwesome' });
 
 /**
  * Renders the control panel image showing members, their acclimation bars, and multipliers.
@@ -27,76 +31,103 @@ async function renderControlPanelImage(members) {
 
     // 4. Iterate through members and draw their status rows
     members.forEach((m, i) => {
+        // Vertical position for this member row
         const y = padding + 20 + i * rowHeight;
 
-        // Draw Level Number
+        // --- DRAW LEVEL ---
+        // Larger font for Level
         ctx.fillStyle = '#faa61a'; // Gold/Yellow for levels
-        ctx.font = `bold 14px ${fontStack}`;
+        ctx.font = `bold 18px ${fontStack}`;
         const levelText = `${m.level}`;
         ctx.fillText(levelText, padding, y);
 
-        // Draw Member Name
+        // --- DRAW NAME ---
+        // Larger font for Name
         ctx.fillStyle = '#ffffff';
-        ctx.font = `bold 16px ${fontStack}`;
-        const nameText = m.name.length > 18 ? m.name.substring(0, 16) + '...' : m.name;
+        ctx.font = `bold 20px ${fontStack}`;
+        // Truncate name slightly less as we have space
+        const nameText = m.name.length > 20 ? m.name.substring(0, 18) + '..' : m.name;
         ctx.fillText(nameText, padding + 35, y);
 
-        // Define Bar Dimensions
-        const barX = padding + 190;
+        // --- DRAW STUMPY XP BAR ---
+        // Wider bar to use more of the 700px width
+        const barX = padding + 220; // Adjusted for larger name space
         const barY = y - 20;
-        const barWidth = 300;
-        const barHeight = 24; // Taller bar for a "solid" feel
+        const barWidth = 240; // Increased to use more space
+        const barHeight = 24; // Increased height
 
-        // Draw Bar Background (Gray track)
+        // Bar background
         ctx.fillStyle = '#4f545c';
         ctx.beginPath();
-        ctx.roundRect(barX, barY, barWidth, barHeight, 4); // Rounded corners for modern look
+        ctx.roundRect(barX, barY, barWidth, barHeight, 4);
         ctx.fill();
 
-        // Draw XP Fill (Red -> Yellow -> Green based on progress)
+        // Bar fill progress
         if (m.progress > 0) {
-            let fillColor;
-            if (m.progress < 0.35) {
-                fillColor = '#ff4742'; // Red for low progress
-            } else if (m.progress < 0.75) {
-                fillColor = '#faa61a'; // Yellow/Orange for mid-range
-            } else {
-                fillColor = '#43b581'; // Green for high progress
-            }
-
+            let fillColor = m.progress < 0.35 ? '#ff4742' : (m.progress < 0.75 ? '#faa61a' : '#43b581');
             ctx.fillStyle = fillColor;
             ctx.beginPath();
-            // Ensure the fill also has rounded corners.
             const fillWidth = Math.max(8, barWidth * m.progress);
             ctx.roundRect(barX, barY, fillWidth, barHeight, 4);
             ctx.fill();
         }
 
-        // Draw Multiplier Text
-        ctx.fillStyle = '#b9bbbe';
-        ctx.font = `bold 14px ${fontStack}`;
-        // Spacing the multiplier slightly more and aligning it better
-        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, barX + barWidth + 20, y);
+        // --- DRAW CHARMS / BUFFS ---
+        let charmX = barX + barWidth + 20; // More spacing after bar
+        const charmY = y - 20;
+        const charmSize = 24; // Increased charm size
+        const charmSpacing = 8; // More spacing between charms
 
-        // Draw "LIVE" tag if screensharing
-        // Replaces the "📺" emoji which often fails to render (showing squares) on Linux servers
-        if (m.isSharing) {
-            const tagX = barX + barWidth + 65;
-            const tagY = y - 20;
-            const tagW = 45;
-            const tagH = 22;
+        (m.buffs || []).forEach(buff => {
+            // Use more vibrant colors ("pop") for the charms.
+            let color = '#2ecc71'; // Vibrant Green (buff)
+            let icon = ''; // Symbol from FontAwesome
 
-            ctx.fillStyle = '#ff73fa'; // Screenshare purple
+            if (buff.type === 'debuff') color = '#e74c3c'; // Vibrant Red (debuff)
+            if (buff.type === 'neutral') color = '#95a5a6'; // Clear Gray (neutral)
+
+            // Define symbols for each buff ID using FontAwesome unicode icons.
+            switch (buff.id) {
+                case 'group':
+                    icon = '\uf0c0'; // 'users' icon
+                    break;
+                case 'sharing':
+                    icon = '\uf108'; // 'desktop' icon
+                    color = '#9b59b6'; // Vibrant Purple
+                    break;
+                case 'acclimation':
+                    icon = '\uf017'; // 'clock' icon
+                    break;
+                case 'mute':
+                    icon = '\uf131'; // 'microphone-slash' icon
+                    break;
+                case 'deaf':
+                    icon = '\uf6a9'; // 'volume-xmark' icon
+                    break;
+            }
+
+            // Draw vibrant charm circle
+            ctx.fillStyle = color;
             ctx.beginPath();
-            ctx.roundRect(tagX, tagY, tagW, tagH, 3);
+            ctx.arc(charmX + charmSize / 2, charmY + charmSize / 2, charmSize / 2, 0, Math.PI * 2);
             ctx.fill();
 
+            // Draw white FontAwesome icon centered in the circle
             ctx.fillStyle = '#ffffff';
-            ctx.font = `bold 11px ${fontStack}`;
+            // Use FontAwesome family for the icon
+            ctx.font = `12px "FontAwesome"`;
             ctx.textAlign = 'center';
-            ctx.fillText('LIVE', tagX + tagW / 2, tagY + 15);
-            ctx.textAlign = 'left'; // Reset alignment
-        }
+            ctx.fillText(icon, charmX + charmSize / 2, charmY + charmSize / 2 + 5);
+            ctx.textAlign = 'left';
+
+            charmX += charmSize + charmSpacing;
+        });
+
+        // --- DRAW MULTIPLIER ---
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold 16px ${fontStack}`; // Larger multiplier font
+        // Position multiplier after the charms
+        ctx.fillText(`${(m.multiplier || 0).toFixed(2)}x`, charmX + 10, y);
     });
 
     return canvas.toBuffer('image/png');
