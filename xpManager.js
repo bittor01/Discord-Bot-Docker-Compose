@@ -88,53 +88,62 @@ function persistSession(userId, session) {
 async function calculateMultiplier(client, userId, channelMembers, limiter, guildMemberOverride = null) {
     // 1. Find the current user's session data from the provided member list
     const member = channelMembers.find(m => m.userId === userId);
-    // If not found, they get no XP
-    if (!member) return 0;
+    // If member is not found in the channel list, return default zero multiplier structure
+    if (!member) return { total: 0, buffs: [] };
 
-    // 2. Sort all members in the channel by acclimation (descending)
-    // to calculate the fallout-style group bonus correctly.
+    // 2. Sort all members in the channel by acclimation percentage descending
+    // to ensure group bonus steps are applied in order of highest acclimated members first.
     const sortedMembers = [...channelMembers].sort((a, b) => b.acclimation - a.acclimation);
 
-    // 3. Calculate Group Bonus
-    // Formula: 1 + sum(bonusStep^i * memberAcclimation) for all OTHER members
+    // 3. Calculate raw Group Bonus sum from all other channel members
+    // Formula: sum(bonusStep^(j+1) * memberAcclimation) for all OTHER members in the room.
     let groupSum = 0;
+    // Filter out the current user to evaluate contribution from peers only.
     const otherMembers = sortedMembers.filter(m => m.userId !== userId);
+    // Loop through each peer member to sum up their tiered group bonus contribution.
     for (let j = 0; j < otherMembers.length; j++) {
+        // Calculate bonus step factor (e.g., 0.5^1 for 1st peer, 0.5^2 for 2nd peer).
         const bonusStep = Math.pow(XP_GROUP_BONUS_STEP, j + 1);
+        // Add weighted contribution of peer member scaled by peer's acclimation.
         groupSum += bonusStep * otherMembers[j].acclimation;
     }
 
-    // 4. Combine with user's own acclimation
-    // Users start at 100% (1.0x) and gain more based on the group's acclimation.
-    const finalGroupMult = 1.0 + groupSum;
+    // 4. Combine with receiving user's own acclimation level
+    // The total group bonus is scaled by the receiving user's own acclimation percentage.
+    const scaledGroupBonus = member.acclimation * groupSum;
+    // Add scaled group bonus to base 1.0x multiplier.
+    const finalGroupMult = 1.0 + scaledGroupBonus;
 
     // 5. Apply Voice State Modifiers (Mute/Deaf)
+    // Initialize individual multiplier baseline at 1.0.
     let individualMult = 1.0;
 
-    // Use the override if provided, otherwise fetch from Discord (expensive)
+    // Use the provided guildMember override if available, otherwise fetch from API/cache
     const guildMember = guildMemberOverride || await fetchGuildMember(client, member.channelId || member.channel_id, userId, limiter);
 
+    // Check voice state penalties if GuildMember object is resolved
     if (guildMember) {
+        // Apply deafened penalty if user is deafened or self-deafened
         if (guildMember.voice.deaf || guildMember.voice.selfDeaf) {
-            // Deafened users get a significant penalty (e.g., 0.1x)
+            // Deafened users get a significant penalty (e.g., 0.1x multiplier)
             individualMult *= (parseFloat(process.env.XP_MULTIPLIER_DEAFENED) || 0.1);
         } else if (guildMember.voice.mute || guildMember.voice.selfMute) {
-            // Muted users get a moderate penalty (e.g., 0.5x)
+            // Muted users get a moderate penalty (e.g., 0.5x multiplier)
             individualMult *= (parseFloat(process.env.XP_MULTIPLIER_MUTED) || 0.5);
         }
     }
 
     // 6. Apply Screenshare Bonus
-    // Users sharing their screen get a boost (e.g., 1.5x)
+    // Users sharing their screen receive a multiplier boost (e.g., 1.5x)
     if (member.isSharing) individualMult *= XP_SCREENSHARE_MULT;
 
-    // 7. Identify all active "Buffs" or "Modifiers" affecting the rate.
+    // 7. Identify all active "Buffs" or "Modifiers" affecting the user rate.
     const buffs = [];
 
-    // Group Bonus
-    if (groupSum > 0) buffs.push({ id: 'group', value: groupSum, type: 'buff' });
+    // Group Bonus Charm: displayed when scaled group bonus contribution is greater than 0
+    if (scaledGroupBonus > 0) buffs.push({ id: 'group', value: scaledGroupBonus, type: 'buff' });
 
-    // Acclimation (if not at 100%, it's effectively a penalty/ramp)
+    // Acclimation Charm: displayed whenever acclimation is under 100% (< 1.0)
     if (member.acclimation < 1.0) buffs.push({ id: 'acclimation', value: member.acclimation, type: 'neutral' });
 
     // Screenshare Bonus
