@@ -66,18 +66,18 @@ async function refreshControlPanel(channel) {
         const membersData = [];
         const channelMembersArray = Array.from(channel.members.values());
         for (const member of channelMembersArray) {
-            // Retrieve their session (or create a temporary one if not yet tracked)
-            const session = xpManager.userSessions.get(member.id) || {
-                acclimation: 0,
-                isSharing: false,
-                sessionStartTimestamp: Date.now()
-            };
+            // Ensure member presence is updated/tracked in userSessions so acclimation is tracked
+            if (!xpManager.userSessions.has(member.id)) {
+                xpManager.updateUserPresence(member.id, channel.id, member.voice.streaming || false);
+            }
+            // Retrieve their active session
+            const session = xpManager.userSessions.get(member.id);
             membersData.push({
                 userId: member.id,
                 name: member.displayName,
-                acclimation: session.acclimation,
-                isSharing: member.voice.streaming || session.isSharing,
-                sessionStartTimestamp: session.sessionStartTimestamp,
+                acclimation: session ? session.acclimation : 0,
+                isSharing: member.voice.streaming || (session ? session.isSharing : false),
+                sessionStartTimestamp: session ? session.sessionStartTimestamp : Date.now(),
                 channelId: channel.id
             });
         }
