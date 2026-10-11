@@ -77,15 +77,19 @@ db.exec(`
         acclimation_percent REAL DEFAULT 0,
         last_seen_timestamp INTEGER,
         is_sharing_screen INTEGER DEFAULT 0,
-        session_start_timestamp INTEGER
+        session_start_timestamp INTEGER,
+        alone_timestamp INTEGER
     )
 `);
 
-// Migration: Add session_start_timestamp to session_state if missing
+// Migration: Add missing columns to session_state if missing
 const sessionTableInfo = db.prepare('PRAGMA table_info(session_state)').all();
 const sessionColumns = sessionTableInfo.map(c => c.name);
 if (!sessionColumns.includes('session_start_timestamp')) {
     db.exec('ALTER TABLE session_state ADD COLUMN session_start_timestamp INTEGER');
+}
+if (!sessionColumns.includes('alone_timestamp')) {
+    db.exec('ALTER TABLE session_state ADD COLUMN alone_timestamp INTEGER');
 }
 
 module.exports = {
@@ -170,18 +174,19 @@ module.exports = {
         return stmt.all(userId);
     },
 
-    updateSession: (userId, channelId, acclimation, lastSeen, isSharing, sessionStart) => {
+    updateSession: (userId, channelId, acclimation, lastSeen, isSharing, sessionStart, aloneTimestamp = null) => {
         const stmt = db.prepare(`
-            INSERT INTO session_state (user_id, channel_id, acclimation_percent, last_seen_timestamp, is_sharing_screen, session_start_timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO session_state (user_id, channel_id, acclimation_percent, last_seen_timestamp, is_sharing_screen, session_start_timestamp, alone_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 acclimation_percent = excluded.acclimation_percent,
                 last_seen_timestamp = excluded.last_seen_timestamp,
                 is_sharing_screen = excluded.is_sharing_screen,
-                session_start_timestamp = excluded.session_start_timestamp
+                session_start_timestamp = excluded.session_start_timestamp,
+                alone_timestamp = excluded.alone_timestamp
         `);
-        return stmt.run(userId, channelId, acclimation, lastSeen, isSharing ? 1 : 0, sessionStart);
+        return stmt.run(userId, channelId, acclimation, lastSeen, isSharing ? 1 : 0, sessionStart, aloneTimestamp);
     },
 
     getSession: (userId) => {

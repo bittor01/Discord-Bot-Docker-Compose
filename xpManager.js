@@ -24,7 +24,8 @@ function init() {
             lastUpdate: now,
             leaveTimestamp: session.last_seen_timestamp,
             isSharing: session.is_sharing_screen === 1,
-            sessionStartTimestamp: session.session_start_timestamp || now
+            sessionStartTimestamp: session.session_start_timestamp || now,
+            aloneTimestamp: session.alone_timestamp || null
         });
     }
 }
@@ -40,13 +41,15 @@ function updateUserPresence(userId, channelId, isSharing = false) {
             lastUpdate: now,
             leaveTimestamp: null,
             isSharing,
-            sessionStartTimestamp: now
+            sessionStartTimestamp: now,
+            aloneTimestamp: null
         };
     } else {
         if (session.channelId !== channelId) {
             session.channelId = channelId;
             session.sessionStartTimestamp = now; // New session on move
             session.acclimation = 0; // Reset acclimation when joining a new channel
+            session.aloneTimestamp = null;
         }
         session.leaveTimestamp = null;
         session.isSharing = isSharing;
@@ -71,7 +74,8 @@ function persistSession(userId, session) {
         session.acclimation,
         session.leaveTimestamp,
         session.isSharing,
-        session.sessionStartTimestamp
+        session.sessionStartTimestamp,
+        session.aloneTimestamp
     );
 }
 
@@ -169,64 +173,88 @@ async function tick(client, limiter) {
     const now = Date.now();
     const TICK_INTERVAL_MS = 10000;
 
-    // First, update all active sessions (decay away-time, grow acclimation)
+    // Count present (active) members in each channel
+    const channelActiveCounts = new Map();
     for (const [userId, session] of userSessions) {
+        if (!session.leaveTimestamp) {
+            const currentCount = channelActiveCounts.get(session.channelId) || 0;
+            channelActiveCounts.set(session.channelId, currentCount + 1);
+        }
+    }
+
+    // Update session states and acclimation for all tracked users
+    for (const [userId, session] of userSessions) {
+        const activeCount = channelActiveCounts.get(session.channelId) || 0;
+
         if (session.leaveTimestamp) {
+            // User is currently absent (left channel / grace period)
             const awayTime = now - session.leaveTimestamp;
             const gracePeriodHold = GRACE_PERIOD_MS;
             const gracePeriodDecay = GRACE_PERIOD_MS;
 
-            // If they've been gone past the grace period, wipe the session
+            // If they've been gone past hold + decay, wipe session and clean up permission overwrites
             if (awayTime > gracePeriodHold + gracePeriodDecay) {
-                // If the channel was Locked or Private, we need to remove their permission overwrite
-                // to prevent them from re-joining now that their session/acclimation has expired.
                 const channel = await limiter.execute(() => client.channels.fetch(session.channelId).catch(() => null));
                 if (channel) {
-                    // Find the user's specific overwrite in this channel.
                     const overwrite = channel.permissionOverwrites.cache.get(userId);
                     if (overwrite) {
-                        // We remove the user's specific override if the channel is currently
-                        // either Locked (Connect denied) or Private (ViewChannel denied).
-                        // This enforces the rule that they lose their "spot" in restricted rooms
-                        // once their session/acclimation has fully decayed.
                         const everyoneOverwrites = channel.permissionOverwrites.cache.get(channel.guild.roles.everyone.id);
                         const isLocked = everyoneOverwrites?.deny.has(PermissionFlagsBits.Connect);
                         const isPrivate = everyoneOverwrites?.deny.has(PermissionFlagsBits.ViewChannel);
 
                         if (isLocked || isPrivate) {
-                            // Delete the overwrite to revoke their explicit Connect/ViewChannel permissions.
                             await limiter.execute(() => overwrite.delete());
                         }
                     }
                 }
 
-                // Remove from memory and database.
                 userSessions.delete(userId);
                 db.clearSession(userId);
                 continue;
             } else if (awayTime > gracePeriodHold) {
-                // Decay acclimation after the initial hold period
+                // Decay acclimation after initial grace hold period
                 const decayProgress = (awayTime - gracePeriodHold) / gracePeriodDecay;
                 session.acclimation = Math.max(0, session.acclimation * (1 - decayProgress));
             }
         } else {
-            // Grow acclimation while they are active in the channel
-            const timePassed = now - session.lastUpdate;
-            const acclimationGain = timePassed / ACCLIMATION_TIME_MS;
-            session.acclimation = Math.min(1.0, session.acclimation + acclimationGain);
+            // User is actively in the channel
+            if (activeCount >= 2) {
+                // Channel has 2 or more members: clear aloneTimestamp and grow acclimation linearly
+                session.aloneTimestamp = null;
+                const timePassed = now - session.lastUpdate;
+                const acclimationGain = timePassed / ACCLIMATION_TIME_MS;
+                session.acclimation = Math.min(1.0, session.acclimation + acclimationGain);
+            } else {
+                // Channel has only 1 member (or 0 active members)
+                if (session.acclimation === 0) {
+                    // Joined alone or was already at 0%: remain at 0% and keep aloneTimestamp null
+                    session.aloneTimestamp = null;
+                } else {
+                    // Had partial or full acclimation when the channel dropped to 1 member
+                    if (!session.aloneTimestamp) {
+                        session.aloneTimestamp = now;
+                    }
+                    const aloneTime = now - session.aloneTimestamp;
+                    if (aloneTime >= GRACE_PERIOD_MS) {
+                        // Grace period while alone expired: reset acclimation to 0% and clear aloneTimestamp
+                        session.acclimation = 0;
+                        session.aloneTimestamp = null;
+                    }
+                    // While aloneTime < GRACE_PERIOD_MS, acclimation remains frozen at its current level.
+                }
+            }
         }
         session.lastUpdate = now;
         persistSession(userId, session);
     }
 
-    // Group active members by channel
+    // Group active members by channel for XP distribution
     const channelGroups = new Map();
     for (const [userId, session] of userSessions) {
         if (session.leaveTimestamp) continue;
         if (!channelGroups.has(session.channelId)) {
             channelGroups.set(session.channelId, []);
         }
-        // Include enough data for the multiplier calculation
         channelGroups.get(session.channelId).push({
             userId,
             acclimation: session.acclimation,
@@ -237,17 +265,11 @@ async function tick(client, limiter) {
 
     // Award XP to every active member
     for (const [channelId, members] of channelGroups) {
-        // Optimization: Fetch the channel and its members once per group
         const channel = await limiter.execute(() => client.channels.fetch(channelId).catch(() => null));
 
         for (const member of members) {
-            // Optimization: Get the GuildMember object from the already-fetched channel cache
             const guildMember = channel?.members.get(member.userId);
-
-            // Calculate real-time multiplier using the extracted function (passing the pre-fetched member)
             const multData = await calculateMultiplier(client, member.userId, members, limiter, guildMember);
-
-            // Calculate XP gain (Base * Time * Multiplier)
             const xpGain = XP_PER_SECOND * (TICK_INTERVAL_MS / 1000) * multData.total;
 
             if (xpGain > 0) {
