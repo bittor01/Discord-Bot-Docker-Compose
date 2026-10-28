@@ -4,8 +4,12 @@
 HubBot is a containerized Node.js application using `discord.js` (v14), `better-sqlite3`, and `canvas`.
 
 ## XP & Acclimation System
-- **Acclimation**: Users joining a VC start at 0% acclimation. This scales linearly to 100% over 15 minutes.
-- **Grace Period**: If a user leaves, their acclimation stays for 7.5m, then decays back to 0% over another 7.5m.
+- **Acclimation**:
+    - **Lone Members (0 -> 1)**: Users sitting alone in a channel remain at 0% acclimation. Acclimation growth begins only when a 2nd member joins (N >= 2).
+    - **Group Joining (1 -> 2)**: When a 2nd member joins, both members acclimate together linearly to 100% over 15 minutes.
+    - **Group Expansion (N -> N+1 for N >= 2)**: When a new member joins an existing group (2+ members), existing members retain their current acclimation levels, and only the joining member starts at 0%.
+    - **Channel Shrinking (2 -> 1)**: When a channel drops to 1 member, the remaining member enters a 7.5-minute grace period holding (freezing) their current acclimation level. If no one joins/rejoins after 7.5 minutes, their acclimation resets to 0%.
+- **Grace Period (Absent User)**: If a user leaves a VC, their acclimation stays held for 7.5 minutes, then decays back to 0% over another 7.5 minutes.
 - **Group Multiplier**:
     - Based on "Fallout" system where more people = more XP.
     - Each additional person provides a bonus (default 0.5x, 0.25x, etc. decaying exponentially).
@@ -46,3 +50,9 @@ Table: `session_state`
 - `/stats [user]`: View level and XP card.
 - `/leaderboard [period]`: View top players.
 - `/givexp`, `/giveachievement`, `/resetuser`: Admin commands restricted by role.
+
+## Permission Logic
+- **Default State**: New channels are created in a **Private** but **Unlocked** state. `@everyone` is denied `ViewChannel`. The creator is granted explicit `ViewChannel` permission.
+- **Locking**: Snapshots current members and grants them explicit `Connect` permission, then denies `Connect` to `@everyone`. This prevents new members from joining. Unlocking clears these overrides.
+- **Privacy (Visibility)**: Snapshots current members and grants them explicit `ViewChannel`, then denies `ViewChannel` to `@everyone`. Making Public clears these overrides.
+- **Re-entry Restriction**: If a user's session expires (after the grace/decay period) while their channel is Locked or Private, their explicit permission overwrite is deleted to prevent them from re-joining.
